@@ -1,0 +1,32 @@
+# Node
+node_modules/
+
+# Build output
+dist/
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment
+.env
+.env.*.local
+
+# Uploads and logs
+uploads/
+*.log
+error.log
+combined.log
+
+# OS files
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Misc
+coverage/
+.nyc_output/
+
+# Optional lock files (uncomment if you don't commit them)
+# package-lock.json
+# yarn.lock

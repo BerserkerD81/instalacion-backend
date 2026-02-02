@@ -1,0 +1,86 @@
+import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+
+@Entity('installation_requests')
+export class InstallationRequest {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column()
+  firstName!: string;
+
+  @Column()
+  lastName!: string;
+
+  @Column()
+  ci!: string;
+
+  @Column()
+  email!: string;
+
+  @Column()
+  address!: string;
+
+  @Column()
+  coordinates!: string;
+
+  @Column()
+  neighborhood!: string;
+
+  @Column()
+  city!: string;
+
+  @Column()
+  postalCode!: string;
+
+  @Column()
+  phone!: string;
+
+  @Column({ nullable: true })
+  additionalPhone!: string | null;
+
+  @Column('text')
+  comments!: string;
+
+  @Column('simple-array')
+  installationDates!: string[];
+
+  @Column()
+  timeFrom!: string;
+
+  @Column()
+  timeTo!: string;
+
+  @Column({ nullable: true })
+  idFront!: string | null;
+
+  @Column({ nullable: true })
+  idBack!: string | null;
+
+  @Column({ nullable: true })
+  addressProof!: string | null;
+
+  @Column({ nullable: true })
+  coupon!: string | null;
+
+  // Campos adicionales para confirmación del técnico
+  @Column({ nullable: true })
+  confirmedByTechnician!: boolean | null;
+
+  @Column({ nullable: true, type: 'datetime' })
+  agreedInstallationDate!: Date | null;
+
+  @Column({ nullable: true })
+  agreedTimeFrom!: string | null;
+
+  @Column({ nullable: true })
+  agreedTimeTo!: string | null;
+
+  @Column({ nullable: true })
+  technicianNotes!: string | null;
+
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt!: Date;
+
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP', onUpdate: 'CURRENT_TIMESTAMP' })
+  updatedAt!: Date;
+}
