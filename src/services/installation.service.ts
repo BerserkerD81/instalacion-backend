@@ -3,6 +3,8 @@ import { InstallationRequest } from '../entities/InstallationRequest';
 import { FileService } from './file.service';
 import { DeepPartial } from 'typeorm';
 import fs from 'fs';
+import FormData from 'form-data';
+import axios from 'axios';
 import logger from '../utils/logger';
 import { wisphubConfig } from '../config';
 
@@ -14,10 +16,18 @@ type InstallationRequestInput = DeepPartial<InstallationRequest> & {
 };
 
 export class InstallationService {
-  private installationRepository = AppDataSource.getRepository(InstallationRequest);
   private fileService = new FileService();
 
+  private async ensureDataSource(): Promise<void> {
+    if (!AppDataSource.isInitialized) {
+      await AppDataSource.initialize();
+    }
+  }
+
   public async createRequest(data: InstallationRequestInput): Promise<InstallationRequest> {
+    await this.ensureDataSource();
+    const installationRepository = AppDataSource.getRepository(InstallationRequest);
+
     // Procesar archivos si existen
     if (data.idFront && Buffer.isBuffer(data.idFront)) {
       data.idFront = this.fileService.saveFile(data.idFront, 'idFront.jpg');
@@ -32,14 +42,16 @@ export class InstallationService {
       data.coupon = this.fileService.saveFile(data.coupon, 'coupon.jpg');
     }
 
-    const request = this.installationRepository.create(data);
-    const savedRequest = await this.installationRepository.save(request);
+    const request = installationRepository.create(data);
+    const savedRequest = await installationRepository.save(request);
     await this.notifyWisphub(savedRequest);
     return savedRequest; // Return the saved request
   }
 
   public async getAllRequests(): Promise<InstallationRequest[]> {
-    const requests = await this.installationRepository.find();
+    await this.ensureDataSource();
+    const installationRepository = AppDataSource.getRepository(InstallationRequest);
+    const requests = await installationRepository.find();
     return requests;
   }
 
@@ -50,65 +62,83 @@ export class InstallationService {
       return;
     }
 
-    const FormDataCtor = (global as any).FormData as { new (): { append: (name: string, value: any, fileName?: string) => void } } | undefined;
-    const fetchFn = (global as any).fetch as
-      | ((input: string, init?: { method?: string; headers?: Record<string, string>; body?: any }) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>)
-      | undefined;
+    const form = new FormData();
 
-    if (!FormDataCtor || !fetchFn) {
-      logger.warn('Fetch/FormData not available in this runtime. Skipping Wisphub request.');
-      return;
-    }
+    const payload = {
+      firstname: request.firstName || '',
+      lastname: request.lastName || '',
+      dni: request.ci || '',
+      address: request.address || '',
+      phone_number: request.phone || '',
+      email: request.email || '',
+      location: request.neighborhood || '',
+      city: request.city || '',
+      postal_code: request.postalCode || '',
+      aditional_phone_number: request.additionalPhone || '',
+      commentaries: request.comments || '',
+      coordenadas: request.coordinates || '',
+    };
 
-    const form = new FormDataCtor();
-    form.append('firstname', request.firstName || '');
-    form.append('lastname', request.lastName || '');
-    form.append('dni', request.ci || '');
-    form.append('address', request.address || '');
-    form.append('phone_number', request.phone || '');
-    form.append('email', request.email || '');
-    form.append('location', request.neighborhood || '');
-    form.append('city', request.city || '');
-    form.append('postal_code', request.postalCode || '');
-    form.append('aditional_phone_number', request.additionalPhone || '');
-    form.append('commentaries', request.comments || '');
-    form.append('coordenadas', request.coordinates || '');
+    Object.entries(payload).forEach(([key, value]) => form.append(key, value));
 
     this.appendFile(form, 'front_dni_proof', request.idFront);
     this.appendFile(form, 'back_dni_proof', request.idBack);
     this.appendFile(form, 'proof_of_address', request.addressProof);
     this.appendFile(form, 'discount_coupon', request.coupon);
 
+    const safeKey = apiKey.length > 12 ? `${apiKey.slice(0, 6)}...${apiKey.slice(-6)}` : '***';
+    logger.info(
+      `Wisphub POST ${apiUrl} apiKey=${safeKey} payload=${JSON.stringify({
+        firstname: payload.firstname,
+        lastname: payload.lastname,
+        dni: payload.dni,
+        email: payload.email,
+        phone_number: payload.phone_number,
+        city: payload.city,
+        postal_code: payload.postal_code,
+        has_front_dni_proof: Boolean(request.idFront),
+        has_back_dni_proof: Boolean(request.idBack),
+        has_proof_of_address: Boolean(request.addressProof),
+        has_discount_coupon: Boolean(request.coupon),
+      })}`
+    );
+
     try {
-      const response = await fetchFn(apiUrl, {
-        method: 'POST',
+      const response = await axios.post(apiUrl, form, {
         headers: {
+          ...form.getHeaders(),
           Authorization: `Api-Key ${apiKey}`,
         },
-        body: form,
+        maxBodyLength: Infinity,
+        validateStatus: () => true,
       });
 
-      if (!response.ok) {
-        const bodyText = await response.text();
-        logger.error(`Wisphub API request failed: ${response.status} - ${bodyText}`);
+      const bodyPreview =
+        typeof response.data === 'string'
+          ? response.data.slice(0, 800)
+          : JSON.stringify(response.data).slice(0, 800);
+
+      logger.info(`Wisphub response status=${response.status} body=${bodyPreview}`);
+
+      if (response.status >= 400) {
+        logger.error(`Wisphub API error status=${response.status}`);
       }
-    } catch (error) {
-      logger.error(`Wisphub API request failed: ${String(error)}`);
+    } catch (err) {
+      const error = err as any;
+      const status = error?.response?.status;
+      const data = error?.response?.data;
+      const dataPreview = data ? (typeof data === 'string' ? data.slice(0, 800) : JSON.stringify(data).slice(0, 800)) : '';
+      logger.error(`Wisphub API request failed status=${status ?? 'n/a'} data=${dataPreview} err=${String(error)}`);
     }
   }
 
-  private appendFile(
-    form: { append: (name: string, value: any, fileName?: string) => void },
-    field: string,
-    fileName: string | null
-  ): void {
+  private appendFile(form: FormData, field: string, fileName: string | null): void {
     if (!fileName) return;
     const filePath = this.fileService.getFilePath(fileName);
     if (!fs.existsSync(filePath)) {
       logger.warn(`File not found for Wisphub upload: ${filePath}`);
       return;
     }
-    const buffer = fs.readFileSync(filePath);
-    form.append(field, buffer, fileName);
+    form.append(field, fs.createReadStream(filePath) as any, fileName);
   }
 }

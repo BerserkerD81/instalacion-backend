@@ -35,7 +35,7 @@ export class InstallationRequest {
   @Column()
   phone!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   additionalPhone!: string | null;
 
   @Column('text')
@@ -50,32 +50,32 @@ export class InstallationRequest {
   @Column()
   timeTo!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 255, nullable: true })
   idFront!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 255, nullable: true })
   idBack!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 255, nullable: true })
   addressProof!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 255, nullable: true })
   coupon!: string | null;
 
   // Campos adicionales para confirmación del técnico
-  @Column({ nullable: true })
+  @Column({ type: 'boolean', nullable: true })
   confirmedByTechnician!: boolean | null;
 
   @Column({ nullable: true, type: 'datetime' })
   agreedInstallationDate!: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   agreedTimeFrom!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   agreedTimeTo!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'text', nullable: true })
   technicianNotes!: string | null;
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })

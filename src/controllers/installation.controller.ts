@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { InstallationService } from '../services/installation.service';
+import logger from '../utils/logger';
 
 export class InstallationController {
   private installationService: InstallationService;
@@ -11,6 +12,22 @@ export class InstallationController {
   public async createInstallationRequest(req: Request, res: Response): Promise<Response> {
     try {
       const data = req.body;
+
+      // Normalizar arrays que llegan como string en form-data
+      if (typeof data.installationDates === 'string') {
+        try {
+          // soporta JSON stringified array o CSV
+          const trimmed = data.installationDates.trim();
+          data.installationDates = trimmed.startsWith('[')
+            ? JSON.parse(trimmed)
+            : trimmed.split(',').map((s: string) => s.trim()).filter(Boolean);
+        } catch {
+          data.installationDates = data.installationDates
+            .split(',')
+            .map((s: string) => s.trim())
+            .filter(Boolean);
+        }
+      }
 
       // Procesar archivos si existen
       if (req.files) {
@@ -24,7 +41,8 @@ export class InstallationController {
       const installationRequest = await this.installationService.createRequest(data);
       return res.status(201).json(installationRequest);
     } catch (error) {
-      return res.status(500).json({ message: 'Error creating installation request', error });
+      logger.error(`Error creating installation request: ${String(error)}`);
+      return res.status(500).json({ message: 'Error creating installation request' });
     }
   }
 
@@ -33,7 +51,8 @@ export class InstallationController {
       const requests = await this.installationService.getAllRequests();
       return res.status(200).json(requests);
     } catch (error) {
-      return res.status(500).json({ message: 'Error retrieving installation requests', error });
+      logger.error(`Error retrieving installation requests: ${String(error)}`);
+      return res.status(500).json({ message: 'Error retrieving installation requests' });
     }
   }
 

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 export class FileService {
   private uploadsDir = path.join(__dirname, '../../uploads');
@@ -15,7 +15,7 @@ export class FileService {
 
   public saveFile(buffer: Buffer, originalFileName: string): string {
     const fileExtension = path.extname(originalFileName);
-    const fileName = `${uuidv4()}${fileExtension}`;
+    const fileName = `${randomUUID()}${fileExtension}`;
     const filePath = path.join(this.uploadsDir, fileName);
 
     fs.writeFileSync(filePath, buffer);
