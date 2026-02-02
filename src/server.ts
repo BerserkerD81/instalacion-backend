@@ -10,7 +10,7 @@ const app = express();
 app.use(
   cors({
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      const allowed = (process.env.CORS_ORIGIN || 'http://localhost:8080')
+      const allowed = (process.env.CORS_ORIGIN || '*')
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
@@ -23,8 +23,9 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Increase request body size limits to allow large form-data uploads (files)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Routes
 app.use('/api', routes);

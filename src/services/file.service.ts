@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import logger from '../utils/logger';
 
 export class FileService {
   private uploadsDir = path.join(__dirname, '../../uploads');
@@ -9,6 +10,7 @@ export class FileService {
   constructor() {
     if (!fs.existsSync(this.uploadsDir)) {
       fs.mkdirSync(this.uploadsDir, { recursive: true });
+      logger.info(`FileService: created uploads dir at ${this.uploadsDir}`);
     }
     this.cleanExpiredFiles();
   }
@@ -19,6 +21,7 @@ export class FileService {
     const filePath = path.join(this.uploadsDir, fileName);
 
     fs.writeFileSync(filePath, buffer);
+    logger.info(`FileService: saved file ${fileName}`);
     return fileName;
   }
 
@@ -27,6 +30,7 @@ export class FileService {
     const filePath = path.join(this.uploadsDir, fileName);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
+      logger.info(`FileService: deleted file ${fileName}`);
     }
   }
 
@@ -46,7 +50,7 @@ export class FileService {
 
       if (fileAge > expirationTime) {
         fs.unlinkSync(filePath);
-        console.log(`Archivo eliminado: ${file}`);
+        logger.info(`FileService: expired file removed: ${file}`);
       }
     });
   }

@@ -4,7 +4,8 @@ import { InstallationController } from '../controllers/installation.controller';
 
 const router = Router();
 const installationController = new InstallationController();
-const upload = multer({ storage: multer.memoryStorage() });
+// Allow larger file uploads (e.g. up to 20MB per file)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // Route to create a new installation request
 router.post(

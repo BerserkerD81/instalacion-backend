@@ -40,8 +40,13 @@ export class InstallationController {
 
       const installationRequest = await this.installationService.createRequest(data);
       return res.status(201).json(installationRequest);
-    } catch (error) {
+    } catch (error: any) {
       logger.error(`Error creating installation request: ${String(error)}`);
+      if (error.isWisphubError) {
+        const status = error.status || 400;
+        // forward Wisphub response body to client
+        return res.status(status).json(error.data);
+      }
       return res.status(500).json({ message: 'Error creating installation request' });
     }
   }
