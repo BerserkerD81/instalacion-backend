@@ -1,8 +1,9 @@
 services:
-  app:
+  api:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: api
     ports:
       - '3000:3000'
     env_file:
@@ -11,6 +12,21 @@ services:
       - uploads_data:/usr/src/app/uploads
     depends_on:
       - db
+    networks:
+      - instalaciones_network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: phpmyadmin
+    restart: always
+    depends_on:
+      - db
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      PMA_ARBITRARY: 0
+    ports:
+      - '8081:80'
     networks:
       - instalaciones_network
 
