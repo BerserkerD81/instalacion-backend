@@ -48,4 +48,5 @@ volumes:
 
 networks:
   instalaciones_network:
-    driver: bridge
+    external: true
+    name: instalaciones_network
