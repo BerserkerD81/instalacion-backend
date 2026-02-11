@@ -62,6 +62,9 @@ export class InstallationRequest {
   @Column({ type: 'varchar', length: 255, nullable: true })
   coupon!: string | null;
 
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  plan!: string | null;
+
   // Campos adicionales para confirmación del técnico
   @Column({ type: 'boolean', nullable: true })
   confirmedByTechnician!: boolean | null;

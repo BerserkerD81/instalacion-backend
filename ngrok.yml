@@ -1,0 +1,16 @@
+version: "2"
+authtoken: 39CrwQDZYOfhCukc4G0D1c3zxo8_2rZbjUbuXqMdjYmoYYZzR
+
+tunnels:
+  # Túnel principal para n8n
+  n8n-tunnel:
+    addr: n8n:5678
+    proto: http
+    schemes:
+      - https
+      - http
+  
+  # Descomenta esto si también quieres exponer tu API públicamente
+  # api-tunnel:
+  #   addr: api:3000
+  #   proto: http

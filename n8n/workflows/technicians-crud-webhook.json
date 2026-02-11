@@ -1,0 +1,218 @@
+{
+  "name": "Technicians CRUD (Webhook -> API)",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "technicians-admin",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "Webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\n\n// Expected input examples:\n// { action: 'create', data: { firstName, lastName, phone, email?, telegramChatId?, isActive? } }\n// { action: 'update', id: 1, data: { ... } }\n// { action: 'delete', id: 1 }\n\nconst action = String(body.action ?? '').toLowerCase();\nconst id = body.id !== undefined ? Number(body.id) : undefined;\nconst data = body.data ?? {};\n\nreturn [{ action, id, data }];"
+      },
+      "id": "Normalize Input",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": [
+          {
+            "conditions": {
+              "options": {
+                "caseSensitive": false,
+                "leftValue": "={{$json.action}}",
+                "typeValidation": "strict"
+              },
+              "conditions": [
+                {
+                  "id": "create",
+                  "leftValue": "={{$json.action}}",
+                  "rightValue": "create",
+                  "operator": {
+                    "type": "string",
+                    "operation": "equals"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "conditions": {
+              "options": {
+                "caseSensitive": false,
+                "leftValue": "={{$json.action}}",
+                "typeValidation": "strict"
+              },
+              "conditions": [
+                {
+                  "id": "update",
+                  "leftValue": "={{$json.action}}",
+                  "rightValue": "update",
+                  "operator": {
+                    "type": "string",
+                    "operation": "equals"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "conditions": {
+              "options": {
+                "caseSensitive": false,
+                "leftValue": "={{$json.action}}",
+                "typeValidation": "strict"
+              },
+              "conditions": [
+                {
+                  "id": "delete",
+                  "leftValue": "={{$json.action}}",
+                  "rightValue": "delete",
+                  "operator": {
+                    "type": "string",
+                    "operation": "equals"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "id": "Switch",
+      "name": "Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:3000/api/technicians",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.data}}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "HTTP Create",
+      "name": "HTTP Create",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1000,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{'http://api:3000/api/technicians/' + $json.id}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.data}}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "HTTP Update",
+      "name": "HTTP Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{'http://api:3000/api/technicians/' + $json.id}}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "HTTP Delete",
+      "name": "HTTP Delete",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1000,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "HTTP Create",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Delete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 120
+  }
+}

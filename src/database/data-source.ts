@@ -1,5 +1,8 @@
 import { DataSource } from 'typeorm';
 import { InstallationRequest } from '../entities/InstallationRequest';
+import { Technician } from '../entities/Technician';
+import { Agenda } from '../entities/Agenda';
+import logger from '../utils/logger';
 
 const AppDataSource = new DataSource({
   type: 'mysql',
@@ -10,9 +13,35 @@ const AppDataSource = new DataSource({
   database: process.env.DB_NAME,
   synchronize: true,
   logging: false,
-  entities: [InstallationRequest],
+  entities: [InstallationRequest, Technician, Agenda],
   migrations: [],
   subscribers: [],
 });
+
+const DEFAULT_RETRY_ATTEMPTS = parseInt(process.env.DB_CONNECT_RETRIES || '10');
+const DEFAULT_RETRY_DELAY_MS = parseInt(process.env.DB_CONNECT_RETRY_DELAY_MS || '2000');
+
+export async function initializeDataSource(): Promise<void> {
+  if (AppDataSource.isInitialized) return;
+
+  let attempt = 0;
+  while (true) {
+    try {
+      attempt += 1;
+      await AppDataSource.initialize();
+      logger.info(`Database connected after ${attempt} attempt(s)`);
+      return;
+    } catch (err) {
+      const isLastAttempt = attempt >= DEFAULT_RETRY_ATTEMPTS;
+      logger.error(`Database connection failed (attempt ${attempt}/${DEFAULT_RETRY_ATTEMPTS}): ${String(err)}`);
+
+      if (isLastAttempt) {
+        throw err;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, DEFAULT_RETRY_DELAY_MS));
+    }
+  }
+}
 
 export default AppDataSource;

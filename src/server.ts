@@ -3,8 +3,10 @@ import cors from 'cors';
 import routes from './routes';
 import errorHandler from './middlewares/errorHandler';
 import { appConfig } from './config';
+import { TechnicianService } from './services/technician.service';
 
 const app = express();
+const technicianService = new TechnicianService();
 
 // Middleware
 app.use(
@@ -33,6 +35,18 @@ app.use(routes);
 
 // Error handling middleware
 app.use(errorHandler);
+
+// Schedule technician sync: run once at startup and then daily
+async function runDailyTechSync() {
+  try {
+    await technicianService.syncFromWeb();
+    console.log('Technician daily sync completed');
+  } catch (err) {
+    console.error('Error running daily technician sync:', String(err));
+  }
+}
+runDailyTechSync();
+setInterval(runDailyTechSync, 24 * 60 * 60 * 1000);
 
 // Start the server
 const PORT = appConfig.port || 3000;
