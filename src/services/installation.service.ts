@@ -1005,6 +1005,49 @@ export class InstallationService {
         logger.warn(`editarInstalacionGeonet: fallo resolviendo tecnico por nombre: ${String(err)}`);
       }
 
+      // Normalizar fechas al formato esperado por Geonet: `DD/MM/YYYY HH:MM`.
+      const toGeonetDate = (val: any): string | any => {
+        if (val === undefined || val === null) return val;
+        const raw = String(val).trim();
+        if (!raw) return raw;
+        // If ISO-like `YYYY-MM-DDTHH:MM[:SS]`, convert to `DD/MM/YYYY HH:MM`
+        const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+        if (iso) {
+          const [, yyyy, mm, dd, hh, min] = iso;
+          return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+        }
+        // If already in D/M/YYYY H:MM or DD/MM/YYYY HH:MM, normalize padding
+        const dm = raw.match(/^([0-3]?\d)\/([0-1]?\d)\/(\d{4})\s+(\d{1,2}):(\d{2})$/);
+        if (dm) {
+          const [, d, m, y, h, mi] = dm;
+          return `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y} ${String(h).padStart(2, '0')}:${mi}`;
+        }
+        // If two-digit year like DD/MM/YY H:MM or DD/MM/YY HH:MM, expand to 20YY
+        const dm2 = raw.match(/^([0-3]?\d)\/([0-1]?\d)\/(\d{2})\s+(\d{1,2}):(\d{2})$/);
+        if (dm2) {
+          const [, d, m, y2, h, mi] = dm2;
+          const y = `20${y2}`;
+          return `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y} ${String(h).padStart(2, '0')}:${mi}`;
+        }
+        return raw;
+      };
+
+      // Convertir si el caller envió fechas en formatos ISO o con año corto
+      if (safeUpdates && safeUpdates.fecha_inicio !== undefined && safeUpdates.fecha_inicio !== null) {
+        const converted = toGeonetDate(safeUpdates.fecha_inicio);
+        if (converted !== safeUpdates.fecha_inicio) {
+          logger.info(`editarInstalacionGeonet: converted fecha_inicio "${safeUpdates.fecha_inicio}" -> "${converted}"`);
+          safeUpdates.fecha_inicio = converted;
+        }
+      }
+      if (safeUpdates && safeUpdates.fecha_final !== undefined && safeUpdates.fecha_final !== null) {
+        const converted = toGeonetDate(safeUpdates.fecha_final);
+        if (converted !== safeUpdates.fecha_final) {
+          logger.info(`editarInstalacionGeonet: converted fecha_final "${safeUpdates.fecha_final}" -> "${converted}"`);
+          safeUpdates.fecha_final = converted;
+        }
+      }
+
       // Override con updates. `null` significa “vaciar”.
       const appliedFields: string[] = [];
       for (const [key, value] of Object.entries(safeUpdates)) {
@@ -1047,6 +1090,23 @@ export class InstallationService {
           : JSON.stringify(response.data).slice(0, 800);
 
       const locationHeader = response.headers?.location;
+      const setCookieHeader = response.headers?.['set-cookie'] || response.headers?.['Set-Cookie'] || response.headers?.cookie;
+
+      // Consider Geonet redirect to /Instalaciones/ as a successful edit (server redirects to list page)
+      let effectiveStatus = response.status;
+      if (response.status === 302 && locationHeader && String(locationHeader).startsWith('/Instalaciones')) {
+        effectiveStatus = 200;
+      }
+
+      let successMessage: string | undefined;
+      try {
+        const sc = Array.isArray(setCookieHeader) ? setCookieHeader.join(';') : String(setCookieHeader || '');
+        const m = sc.match(/messages="([^"]+)"/);
+        if (m && m[1]) {
+          // messages cookie contains JSON-like content; attempt basic decode of escaped unicode
+          successMessage = decodeURIComponent(m[1]);
+        }
+      } catch {}
 
       let formErrors: string[] | undefined;
       let missingRequiredFields: string[] | undefined;
@@ -1061,8 +1121,8 @@ export class InstallationService {
         }
       }
 
-      return {
-        status: response.status,
+      const result: any = {
+        status: effectiveStatus,
         location: locationHeader,
         responsePreview,
         url,
@@ -1070,6 +1130,8 @@ export class InstallationService {
         formErrors,
         missingRequiredFields,
       };
+      if (successMessage) result.successMessage = successMessage;
+      return result;
     });
   }
 
