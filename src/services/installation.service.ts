@@ -990,19 +990,63 @@ export class InstallationService {
       });
 
       // Si el caller envió un nombre de técnico en lugar del id, intentar resolverlo
-      // automáticamente a partir del <select> del formulario (soporta keys `tecnicoName` o `tecnicoNombre`).
+      // primero usando la API Wisphub (más fiable), luego fallback al <select> del formulario.
       try {
         const techNameCandidate =
-          safeUpdates && (safeUpdates.tecnicoName || safeUpdates.tecnicoNombre) ? String(safeUpdates.tecnicoName || safeUpdates.tecnicoNombre).trim() : '';
+          safeUpdates && (safeUpdates.tecnicoName || safeUpdates.tecnicoNombre)
+            ? String(safeUpdates.tecnicoName || safeUpdates.tecnicoNombre).trim()
+            : '';
         if (techNameCandidate) {
-          const techSelect = this.findSelect($, 'tecnico');
-          const resolved = this.findOptionId(techSelect, techNameCandidate);
-          if (resolved) {
-            safeUpdates.tecnico = resolved;
+          try {
+            const { apiKey } = wisphubConfig;
+            if (apiKey) {
+              const resolvedFromWisphub = await this.resolveWisphubTechnicianIdByName({
+                technicianName: techNameCandidate,
+                apiKey,
+              });
+              if (resolvedFromWisphub) {
+                safeUpdates.tecnico = resolvedFromWisphub;
+              }
+            }
+          } catch (wisErr) {
+            logger.warn(`editarInstalacionGeonet: Wisphub lookup failed: ${String(wisErr)}`);
+          }
+
+          // Fallback: try matching against the select in the page we already fetched
+          if (!safeUpdates.tecnico) {
+            const techSelect = this.findSelect($, 'tecnico');
+            const resolved = this.findOptionId(techSelect, techNameCandidate);
+            if (resolved) safeUpdates.tecnico = resolved;
           }
         }
       } catch (err) {
         logger.warn(`editarInstalacionGeonet: fallo resolviendo tecnico por nombre: ${String(err)}`);
+      }
+
+      // Antes de postear, recargar la página para obtener los valores/CSRF más recientes
+      try {
+        const freshPage = await this.withRetry(
+          () =>
+            client.get(url, {
+              headers: { 'User-Agent': 'Mozilla/5.0 (Node.js Scraper)' },
+              validateStatus: () => true,
+            }),
+          'GET editar instalacion (confirmación antes de POST)'
+        );
+        if (freshPage && freshPage.status >= 200 && freshPage.status < 300 && typeof freshPage.data === 'string') {
+          const $fresh = cheerio.load(freshPage.data);
+          const freshCsrf = $fresh('input[name="csrfmiddlewaretoken"]').attr('value') || csrfToken;
+          const freshFormEl = this.findFormWithCsrf($fresh);
+          const freshBaseFields = this.extractFormFields($fresh, freshFormEl);
+          // Replace baseFields with fresh values and update csrfToken
+          Object.keys(baseFields).forEach((k) => delete baseFields[k]);
+          Object.entries(freshBaseFields).forEach(([k, v]) => {
+            baseFields[k] = v as string;
+          });
+          baseFields['csrfmiddlewaretoken'] = freshCsrf;
+        }
+      } catch (err) {
+        logger.warn(`editarInstalacionGeonet: no se pudo recargar página antes de POST: ${String(err)}`);
       }
 
       // Normalizar fechas al formato esperado por Geonet: `DD/MM/YYYY HH:MM`.
@@ -1050,12 +1094,80 @@ export class InstallationService {
 
       // Override con updates. `null` significa “vaciar”.
       const appliedFields: string[] = [];
+
+      // Map updates keys to actual form field names when possible (e.g. 'tecnico' -> 'cliente-tecnico')
+      const baseKeys = Object.keys(baseFields);
+      const normalizeKey = (k: string) => this.normalizeText(String(k || ''));
+
+      const mapUpdateToField = (updKey: string): string | null => {
+        // direct match
+        if (baseFields.hasOwnProperty(updKey)) return updKey;
+        const updNorm = normalizeKey(updKey).replace(/[-_\s]+/g, '');
+
+        // prefer keys containing 'tecnico' if update key suggests technician
+        if (updNorm.includes('tecnico') || updNorm.includes('technician') || updNorm.includes('technicianname')) {
+          const candidate = baseKeys.find((k) => normalizeKey(k).includes('tecnico'));
+          if (candidate) return candidate;
+        }
+
+        // prefer keys related to installation date.
+        // If the update key suggests 'inicio' or 'instal', prefer fields explicitly mentioning installation
+        if (updNorm.includes('inicio') || updNorm.includes('instal') || updNorm.includes('instalacion')) {
+          const candidateInstal = baseKeys.find((k) => {
+            const nk = normalizeKey(k).replace(/[-_\s]+/g, '');
+            return nk.includes('instal') || nk.includes('instalacion') || nk.includes('instalaci');
+          });
+          if (candidateInstal) return candidateInstal;
+        }
+
+        // If the update key mentions 'fecha' or 'date', prefer installation-specific fecha fields first,
+        // then fallback to any 'fecha' or 'date' field.
+        if (updNorm.includes('fecha') || updNorm.includes('date')) {
+          const candidateFechaInstal = baseKeys.find((k) => {
+            const nk = normalizeKey(k).replace(/[-_\s]+/g, '');
+            return nk.includes('fecha') && (nk.includes('instal') || nk.includes('instalaci'));
+          });
+          if (candidateFechaInstal) return candidateFechaInstal;
+
+          const candidateFecha = baseKeys.find((k) => {
+            const nk = normalizeKey(k);
+            return nk.includes('fecha') || nk.includes('date');
+          });
+          if (candidateFecha) return candidateFecha;
+        }
+
+        // fuzzy match by normalized tokens / similarity score
+        let best: { key: string; score: number } | null = null;
+        for (const k of baseKeys) {
+          const score = this.calculateSimilarityScore(updNorm, normalizeKey(k).replace(/[-_\s]+/g, ''));
+          if (!best || score > best.score) best = { key: k, score };
+        }
+        if (best && best.score >= 0.5) return best.key;
+
+        // no good match
+        return null;
+      };
+
+      const finalSentPairs: Record<string, string> = {};
       for (const [key, value] of Object.entries(safeUpdates)) {
         if (!key) continue;
         if (value === undefined) continue;
         appliedFields.push(key);
-        baseFields[key] = value === null ? '' : String(value);
+
+        const mapped = mapUpdateToField(key);
+        const fieldName = mapped || key;
+        baseFields[fieldName] = value === null ? '' : String(value);
+        finalSentPairs[fieldName] = baseFields[fieldName];
+        if (!mapped) {
+          logger.warn(`editarInstalacionGeonet: no se encontró campo mapeado para update '${key}', usando '${fieldName}' tal cual`);
+        } else {
+          logger.info(`editarInstalacionGeonet: mapped update '${key}' -> field '${fieldName}'`);
+        }
       }
+
+      baseFields['csrfmiddlewaretoken'] = csrfToken;
+
+      logger.info(`editarInstalacionGeonet: will POST form fields=${JSON.stringify(finalSentPairs)}`);
 
       baseFields['csrfmiddlewaretoken'] = csrfToken;
 
@@ -1131,6 +1243,30 @@ export class InstallationService {
         missingRequiredFields,
       };
       if (successMessage) result.successMessage = successMessage;
+
+      // Si la edición fue reportada como exitosa, re-cargar la página de edición
+      // para verificar los valores actuales y ofrecerlos al caller para depuración.
+      if (effectiveStatus >= 200 && effectiveStatus < 400) {
+        try {
+          const confirmPage = await this.withRetry(
+            () =>
+              client.get(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Node.js Scraper)' },
+                validateStatus: () => true,
+              }),
+            'GET confirmar editar instalacion (csrf)'
+          );
+          if (confirmPage && confirmPage.status >= 200 && confirmPage.status < 300 && typeof confirmPage.data === 'string') {
+            const $confirm = cheerio.load(confirmPage.data);
+            const confirmFormEl = this.findFormWithCsrf($confirm);
+            const currentFields = this.extractFormFields($confirm, confirmFormEl);
+            result.currentFields = currentFields;
+          }
+        } catch (err) {
+          logger.warn(`editarInstalacionGeonet: no se pudo recuperar página de confirmación: ${String(err)}`);
+        }
+      }
+
       return result;
     });
   }
