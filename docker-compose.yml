@@ -4,8 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: api
-    ports:
-      - '3000:3000'
+    # SEGURIDAD: Solo accesible desde el propio servidor (localhost)
     env_file:
       - .env
     volumes:
@@ -19,28 +18,26 @@ services:
     image: n8nio/n8n:latest
     container_name: n8n
     restart: always
+    # SEGURIDAD: Solo accesible localmente. Tu Proxy (Nginx/Traefik) debe apuntar a localhost:5678
     ports:
       - "5678:5678"
-    # --- SOLUCIÓN DNS: Forzamos DNS de Google y Cloudflare ---
     dns:
       - 8.8.8.8
       - 1.1.1.1
     environment:
-      # --- SOLUCIÓN IPv4: Evita errores de conexión en Node.js ---
       - NODE_OPTIONS=--dns-result-order=ipv4first
-      
       - TZ=America/Santiago
       - NODE_ENV=production
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_PERSONALIZATION_ENABLED=false
-      - N8N_ENCRYPTION_KEY=change-me
+      # SEGURIDAD: Lee estas variables desde el .env, no las escribas aquí
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
       - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=admin123
-      - N8N_HOST=https://laverne-unequaled-deon.ngrok-free.dev
-      - WEBHOOK_URL=https://laverne-unequaled-deon.ngrok-free.dev
-      # Nota: Si cambias la URL de ngrok, recuerda actualizarla aquí.
-      
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_HOST=n8n.geonet.cl
+      - WEBHOOK_URL=https://n8n.geonet.cl/
+      - N8N_PROXY_HOPS=1
     volumes:
       - n8n_data:/home/node/.n8n
     networks:
@@ -56,8 +53,10 @@ services:
       - PMA_HOST=mysql
       - PMA_PORT=3306
       - PMA_ARBITRARY=0
+    # SEGURIDAD EXTREMA: Solo escucha en localhost. 
+    # Nadie en internet verá este puerto abierto.
     ports:
-      - '8081:80'
+      - '127.0.0.1:8081:80'
     networks:
       - instalaciones_network
 
@@ -67,31 +66,15 @@ services:
     restart: always
     env_file:
       - .env
-    ports:
-      - '3306:3306'
+    # SEGURIDAD TOTAL: Eliminamos 'ports'. 
+    # La base de datos es INVISIBLE para el mundo exterior.
+    # Solo 'api', 'n8n' y 'phpmyadmin' pueden conectarse a ella.
     volumes:
       - db_data:/var/lib/mysql
     networks:
       - instalaciones_network
-
-  # --- SERVICIO NGROK ---
-  ngrok:
-    image: ngrok/ngrok:latest
-    container_name: ngrok
-    restart: unless-stopped
-    command: start --all --config /etc/ngrok.yml
-    environment:
-      # Asegúrate de tener NGROK_AUTHTOKEN en tu archivo .env
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-    volumes:
-      - ./ngrok.yml:/etc/ngrok.yml
-    ports:
-      - 4040:4040 # Dashboard de inspección local
-    networks:
-      - instalaciones_network
-    depends_on:
-      - n8n
-      - api
+    # Comando recomendado para compatibilidad con n8n y node viejos
+    command: --default-authentication-plugin=mysql_native_password
 
 volumes:
   db_data:
