@@ -314,6 +314,12 @@ export class InstallationService {
     // Procesar archivos: guardar temporalmente para adjuntar a Wisphub
     const savedFiles: string[] = [];
     try {
+      // Normalizar RUT/CI: quitar puntos y, si termina en "-k", convertir la k a mayúscula
+      if (data.ci !== undefined && data.ci !== null) {
+        try {
+          data.ci = this.normalizeCedula(String(data.ci));
+        } catch {}
+      }
       if (data.idFront && Buffer.isBuffer(data.idFront)) {
         data.idFront = this.fileService.saveFile(data.idFront, 'idFront.jpg');
         savedFiles.push(String(data.idFront));
@@ -1943,7 +1949,14 @@ export class InstallationService {
   }
 
   private normalizeCedula(value: string): string {
-    return String(value || '').replace(/\./g, '').trim();
+    const raw = String(value || '');
+    // Remove dots
+    let s = raw.replace(/\./g, '').trim();
+    // If ends with -k or -K, ensure uppercase K
+    if (/-k$/i.test(s)) {
+      s = s.replace(/-k$/i, '-K');
+    }
+    return s;
   }
 
   private findSelect($: cheerio.CheerioAPI, token: string): cheerio.Cheerio<any> {
