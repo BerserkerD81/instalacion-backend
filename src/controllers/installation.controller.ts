@@ -70,6 +70,12 @@ export class InstallationController {
           .json({ message: 'clientName y technicianName son obligatorios' });
       }
 
+      const zonaName = (req.body && (req.body.zona ?? req.body.zone ?? req.body.zona_cliente)) ?? undefined;
+      const routerName = (req.body && (req.body.router ?? req.body.sectorial ?? req.body.router_cliente)) ?? undefined;
+      const apName = (req.body && (
+        req.body.ap ?? req.body.nap ?? req.body.ap_cliente ?? req.body.nap_cliente ?? req.body.sectorial ?? req.body.sectorial_nap
+      )) ?? undefined;
+
       const result = await this.installationService.lookupPreinstallationActivation({
         clientName: String(clientName),
         technicianName: String(technicianName),
@@ -80,6 +86,9 @@ export class InstallationController {
           installationRequestId !== undefined && installationRequestId !== null
             ? Number(installationRequestId)
             : undefined,
+        zonaName: zonaName !== undefined && zonaName !== null ? String(zonaName) : undefined,
+        routerName: routerName !== undefined && routerName !== null ? String(routerName) : undefined,
+        apName: apName !== undefined && apName !== null ? String(apName) : undefined,
       });
 
       return res.status(200).json(result);

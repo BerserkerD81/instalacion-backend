@@ -2,6 +2,12 @@ import { config } from 'dotenv';
 
 config();
 
+export const SMARTOLT = {
+  baseUrl: process.env.SMARTOLT_BASE_URL || '',
+  apiKey: process.env.SMARTOLT_API_KEY || ''
+};
+
+
 const environment = process.env.NODE_ENV || 'development';
 
 const dbConfig = {

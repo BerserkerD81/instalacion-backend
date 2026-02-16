@@ -379,6 +379,9 @@ export class InstallationService {
     technicianName: string;
     planName?: string;
     installationRequestId?: number;
+    zonaName?: string;
+    routerName?: string;
+    apName?: string;
   }): Promise<{
     activationLink: string;
     technicianId: string;
@@ -509,6 +512,9 @@ export class InstallationService {
         planId,
         firstAvailableIp,
         installationRequestId: resolvedRequestId,
+        zonaName: params.zonaName,
+        routerName: params.routerName,
+        apName: params.apName,
       });
 
       return { activationLink, technicianId, planId, firstAvailableIp, activationPostStatus };
@@ -1555,17 +1561,17 @@ export class InstallationService {
       const dmY = raw.match(/^([0-3]\d)\/([0-1]\d)\/(\d{4})\s+([0-2]\d):([0-5]\d)(?::([0-5]\d))?$/);
       if (dmY) {
         const [, dd, mm, yyyy, hh, min, ss] = dmY;
-        return `${yyyy}-${mm}-${dd}T${hh}:${min}:${ss ?? '00'}`;
+        return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss ?? '00'}`;
       }
 
       const yMdSpace = raw.match(/^(\d{4})-([0-1]\d)-([0-3]\d)\s+([0-2]\d):([0-5]\d)(?::([0-5]\d))?$/);
       if (yMdSpace) {
         const [, yyyy, mm, dd, hh, min, ss] = yMdSpace;
-        return `${yyyy}-${mm}-${dd}T${hh}:${min}:${ss ?? '00'}`;
+        return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss ?? '00'}`;
       }
 
       if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) {
-        return raw;
+        return raw.replace('T', ' ');
       }
 
       return value;
@@ -1616,16 +1622,18 @@ export class InstallationService {
     sentFields.length = 0;
     let response = await (async () => {
       if (!hasFile) {
-        // Prefer JSON for PATCH when no file is being uploaded.
-        sentFields.push(...Object.keys(normalizedUpdates));
+        // Use multipart/form-data for PATCH even when no file is present.
+        // Some Wisphub endpoints expect form-data rather than urlencoded or JSON.
+        const patchForm = buildMultipart(normalizedUpdates);
         return axios.request({
           method: 'patch',
           url: detailUrl,
-          data: normalizedUpdates,
+          data: patchForm,
           headers: {
-            'Content-Type': 'application/json',
+            ...patchForm.getHeaders(),
             Authorization: `Api-Key ${apiKey}`,
           },
+          maxBodyLength: Infinity,
           validateStatus: () => true,
         });
       }
@@ -1645,7 +1653,20 @@ export class InstallationService {
     })();
 
     // 2) If PATCH not allowed or fails due to required fields, try PUT by merging with current ticket.
-    const patchNotAllowed = response.status === 405;
+    let patchNotAllowed = response.status === 405;
+    // Some fields (estado, fecha_inicio, fecha_final) are known to be ignored by partial PATCH
+    // even when the response is 200. If caller attempts to update them, force the PUT fallback
+    // so we send a merged full representation.
+    if (!patchNotAllowed && response.status >= 200 && response.status < 300) {
+      const forcePutKeys = ['estado', 'fecha_inicio', 'fecha_final'];
+      for (const k of forcePutKeys) {
+        if (Object.prototype.hasOwnProperty.call(normalizedUpdates, k)) {
+          patchNotAllowed = true;
+          warnings.push('PATCH may not update some fields; forcing PUT fallback for certain fields.');
+          break;
+        }
+      }
+    }
     // IMPORTANT: Do NOT fall back to PUT on a generic 400.
     // Wisphub might support PATCH but reject our payload; PUT requires full valid choice values and can break partial updates.
     if (patchNotAllowed) {
@@ -1684,6 +1705,40 @@ export class InstallationService {
                     return { value, label };
                   })
                   .filter(Boolean) as Array<{ value: any; label: string }>;
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        // If OPTIONS on detail didn't yield choices, try OPTIONS on base tickets URL as fallback
+        try {
+          if (!optionChoices || Object.keys(optionChoices).length === 0) {
+            const baseUrl = this.getWisphubTicketsUrl();
+            const optBaseResp = await axios.request({
+              method: 'options',
+              url: baseUrl,
+              headers: { Authorization: `Api-Key ${apiKey}` },
+              validateStatus: () => true,
+            });
+            if (optBaseResp.status >= 200 && optBaseResp.status < 300 && optBaseResp.data && typeof optBaseResp.data === 'object') {
+              const actions = (optBaseResp.data as any)?.actions;
+              const putMeta = actions?.PUT ?? actions?.put ?? actions?.Patch ?? actions?.PATCH ?? actions;
+              const meta = putMeta && typeof putMeta === 'object' ? putMeta : actions?.PUT;
+              if (meta && typeof meta === 'object') {
+                for (const [field, def] of Object.entries<any>(meta)) {
+                  const choicesRaw = def?.choices;
+                  if (!Array.isArray(choicesRaw)) continue;
+                  optionChoices[field] = choicesRaw
+                    .map((c: any) => {
+                      const value = c?.value ?? c?.id ?? c?.key;
+                      const label = String(c?.display_name ?? c?.display ?? c?.label ?? c?.name ?? value ?? '').trim();
+                      if (value === undefined) return null;
+                      return { value, label };
+                    })
+                    .filter(Boolean) as Array<{ value: any; label: string }>;
+                }
               }
             }
           }
@@ -1738,6 +1793,30 @@ export class InstallationService {
         // override only provided
         Object.assign(merged, normalizedUpdates);
 
+        try {
+          // Normalize date/time fields in merged to ISO expected by Wisphub
+          if (merged.fecha_inicio) merged.fecha_inicio = normalizeWisphubDateTime(merged.fecha_inicio) ?? merged.fecha_inicio;
+          if (merged.fecha_final) merged.fecha_final = normalizeWisphubDateTime(merged.fecha_final) ?? merged.fecha_final;
+
+          // If tecnico is a textual name, try resolving to staff id via Wisphub API
+          if (merged.tecnico && typeof merged.tecnico === 'string' && !/^[0-9]+$/.test(String(merged.tecnico).trim())) {
+            try {
+              const resolvedTech = await this.resolveWisphubTechnicianIdByName({ technicianName: String(merged.tecnico), apiKey });
+              if (resolvedTech) merged.tecnico = resolvedTech;
+            } catch {}
+          }
+
+          for (const [field, val] of Object.entries(merged)) {
+            if (val === undefined || val === null) continue;
+            if (optionChoices && optionChoices[field] && Array.isArray(optionChoices[field]) && optionChoices[field].length > 0) {
+              merged[field] = mapChoiceIfNeeded(field, val);
+            }
+          }
+        } catch (mapErr) {
+          // Non-fatal: proceed with original merged values if mapping fails
+          logger.warn(`editarTicketWisphub: option mapping failed: ${String(mapErr)}`);
+        }
+
         sentFields.length = 0;
         response = await (async () => {
           if (!hasFile) {
@@ -1748,15 +1827,16 @@ export class InstallationService {
               if (s === '' || s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null') continue;
               cleaned[k] = v;
             }
-            sentFields.push(...Object.keys(cleaned));
+            const putForm = buildMultipart(cleaned);
             return axios.request({
               method: 'put',
               url: detailUrl,
-              data: cleaned,
+              data: putForm,
               headers: {
-                'Content-Type': 'application/json',
+                ...putForm.getHeaders(),
                 Authorization: `Api-Key ${apiKey}`,
               },
+              maxBodyLength: Infinity,
               validateStatus: () => true,
             });
           }
@@ -2321,8 +2401,11 @@ export class InstallationService {
     planId: string;
     firstAvailableIp: string | null;
     installationRequestId: number;
+    zonaName?: string;
+    routerName?: string;
+    apName?: string;
   }): Promise<number> {
-    const { client, activationLink, technicianId, planId, firstAvailableIp, installationRequestId } = params;
+    const { client, activationLink, technicianId, planId, firstAvailableIp, installationRequestId, zonaName, routerName, apName } = params;
 
     if (!firstAvailableIp) {
       const err: any = new Error('No se encontró una IP disponible');
@@ -2374,9 +2457,42 @@ export class InstallationService {
     const zonaSelect = this.findSelect($, 'zona_cliente');
     const apSelect = this.findSelect($, 'ap_cliente');
 
-    const routerValue = this.getSelectedOptionValue(routerSelect);
-    const zonaValue = this.getSelectedOptionValue(zonaSelect);
-    const apValue = this.getSelectedOptionValue(apSelect);
+    let routerValue = '';
+    let zonaValue = '';
+    let apValue = '';
+
+    // resolve router
+    if (routerName && routerSelect && routerSelect.length > 0) {
+      routerValue = this.findOptionId(routerSelect, String(routerName));
+      if (!routerValue) {
+        logger.warn(`submitGeonetActivation: routerName provided but no match found="${routerName}"; falling back to selected value`);
+        routerValue = this.getSelectedOptionValue(routerSelect);
+      }
+    } else {
+      routerValue = this.getSelectedOptionValue(routerSelect);
+    }
+
+    // resolve zona
+    if (zonaName && zonaSelect && zonaSelect.length > 0) {
+      zonaValue = this.findOptionId(zonaSelect, String(zonaName));
+      if (!zonaValue) {
+        logger.warn(`submitGeonetActivation: zonaName provided but no match found="${zonaName}"; falling back to selected value`);
+        zonaValue = this.getSelectedOptionValue(zonaSelect);
+      }
+    } else {
+      zonaValue = this.getSelectedOptionValue(zonaSelect);
+    }
+
+    // resolve ap / NAP / Sectorial
+    if (apName && apSelect && apSelect.length > 0) {
+      apValue = this.findOptionId(apSelect, String(apName));
+      if (!apValue) {
+        logger.warn(`submitGeonetActivation: apName provided but no match found="${apName}"; falling back to selected value`);
+        apValue = this.getSelectedOptionValue(apSelect);
+      }
+    } else {
+      apValue = this.getSelectedOptionValue(apSelect);
+    }
 
     const fullName = `${request.firstName || ''} ${request.lastName || ''}`.trim();
     const activationId = this.getActivationIdFromUrl(activationLink);
