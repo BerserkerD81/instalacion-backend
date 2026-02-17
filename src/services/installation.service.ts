@@ -2097,6 +2097,13 @@ export class InstallationService {
       targetEmailVariants = Array.from(new Set(targetEmailVariants));
     }
 
+    const extractTowerLetter = (s: string) => {
+      const m = String(s).match(/torre\s*[:#\-]?\s*([A-Za-z0-9])/i);
+      return m ? this.normalizeText(m[1]) : '';
+    };
+    const targetTower = extractTowerLetter(optionName);
+    const locationTokens = ['mirador', 'condominio', 'brisas', 'edificio', 'spliter'];
+
     selectEl.find('option').each((_index: number, opt: any) => {
       const value = selectEl.find(opt).attr('value') || '';
       const text = selectEl.find(opt).text();
@@ -2128,6 +2135,22 @@ export class InstallationService {
         const numericOverlap = targetNumbers.filter((n) => candidateNumbers.includes(n)).length;
         if (numericOverlap > 0) {
           score += 0.4;
+        }
+      }
+
+      // tower match boost
+      const candTower = extractTowerLetter(text);
+      if (targetTower && candTower && targetTower === candTower) {
+        score += 0.6;
+      }
+
+      // location token boost (prefer candidates that share building/location tokens)
+      const locationShared = locationTokens.filter((k) => target.includes(k) && normalizedText.includes(k)).length;
+      if (locationShared > 0) {
+        score += locationShared * 0.6;
+        // deprioritize generic CTO entries when a building token exists in the target
+        if (/\bcto\b/.test(normalizedText) && locationShared > 0) {
+          score -= 0.25;
         }
       }
 
@@ -2394,9 +2417,16 @@ export class InstallationService {
 
   private findFirstAvailableIp($: cheerio.CheerioAPI): string | null {
     const bodyText = $('body').text();
-    if (!bodyText) return null;
+    if (!bodyText) {
+      logger.info('findFirstAvailableIp: no body text');
+      return null;
+    }
     const matches = bodyText.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-    if (matches.length === 0) return null;
+    if (matches.length === 0) {
+      logger.info('findFirstAvailableIp: no IP matches found');
+      return null;
+    }
+    logger.info(`findFirstAvailableIp: found IPs=${JSON.stringify(matches)}`);
     return matches[0] ?? null;
   }
 
@@ -2503,198 +2533,113 @@ export class InstallationService {
       zonaValue = this.getSelectedOptionValue(zonaSelect);
     }
 
-    // resolve ap / NAP / Sectorial
-    // resolve ap / NAP / Sectorial (improved matching with detailed logs)
+// ... (código anterior del método submitGeonetActivation)
+
+    // resolve ap / NAP / Sectorial (Lógica Mejorada y Estructurada)
     if (apSelect && apSelect.length > 0) {
-      const availableApOptions = this.extractOptionTexts(apSelect);
-      logger.info(
-        `submitGeonetActivation: ap options count=${availableApOptions.length} sample=${JSON.stringify(
-          availableApOptions.slice(0, 10)
-        )}`
-      );
-
       if (apName && String(apName).trim()) {
-        logger.info(`submitGeonetActivation: attempting to resolve apName="${apName}"`);
-        // Primary fuzzy match using existing helper
-        let resolvedAp = this.findOptionId(apSelect, String(apName));
-        if (resolvedAp) {
-          logger.info(
-            `submitGeonetActivation: apName matched via findOptionId -> value="${resolvedAp}" text="${this.findOptionTextByValue(
-              apSelect,
-              resolvedAp
-            )}"`
-          );
-          apValue = resolvedAp;
-        } else {
-          // Try attribute-based / substring matching as a looser fallback
-          const targetNorm = this.normalizeText(String(apName));
-          let foundValue = '';
-          apSelect.find('option').each((_i: number, opt: any) => {
-            if (foundValue) return undefined;
-            const $opt = apSelect.find(opt);
-            const value = String($opt.attr('value') || '');
-            if (!value) return undefined;
-            const text = String($opt.text() || '');
-            const title = String($opt.attr('title') || '');
-            const dataAttrs = [
-              $opt.attr('data-ap') || $opt.attr('data_ap'),
-              $opt.attr('data-nap') || $opt.attr('data_nap'),
-              $opt.attr('data-name') || $opt.attr('data_name'),
-            ]
-              .filter(Boolean)
-              .join(' ');
-            const combined = `${text} ${title} ${dataAttrs} ${value}`;
-            const combinedNorm = this.normalizeText(combined);
-            if (combinedNorm.includes(targetNorm) || targetNorm.includes(this.normalizeText(text))) {
-              foundValue = value;
-              logger.info(`submitGeonetActivation: ap matched via attribute/substr -> value="${value}" text="${text}"`);
-              return undefined;
-            }
-            return undefined;
-          });
+        const targetRaw = String(apName);
+        const targetNorm = this.normalizeText(targetRaw);
+        
+        logger.info(`submitGeonetActivation: Resolviendo AP para: "${targetRaw}"`);
 
-          if (foundValue) {
-            apValue = foundValue;
-          } else {
-            // Stronger heuristic: combine substring/ngram/order/tower/zone boosts.
-            const targetNorm = this.normalizeText(String(apName));
-            const targetTokens = targetNorm.split(' ').filter(Boolean);
-            const extractTowerLetter = (s: string) => {
-              const m = String(s).match(/torre\s*[:#\-]?\s*([A-Za-z0-9])/i);
-              return m ? this.normalizeText(m[1]) : '';
-            };
-            const targetTower = extractTowerLetter(apName);
+        // Helpers para extraer metadatos específicos basados en tu lista JSON
+        const extractZone = (s: string) => {
+          const m = s.match(/(?:zona|z)\s*[-:.]?\s*(\d+)/i);
+          return m ? m[1] : null; // Retorna "308", "405", etc.
+        };
+        const extractCtoNum = (s: string) => {
+          const m = s.match(/(?:cto|nap|odf)\s*[-:.]?\s*(\d+)/i);
+          return m ? m[1] : null; // Retorna "8", "1", etc.
+        };
+        const extractTower = (s: string) => {
+          // Busca "Torre A", "Torre 4", "Torre D"
+          const m = s.match(/(?:torre|edificio)\s*[-:.]?\s*([a-z0-9]+)/i);
+          return m ? this.normalizeText(m[1]) : null;
+        };
 
-            const buildNgrams = (tokens: string[], minN = 2, maxN = 4) => {
-              const grams: string[] = [];
-              const nMax = Math.min(maxN, tokens.length);
-              for (let n = nMax; n >= Math.max(minN, 2); n--) {
-                for (let i = 0; i + n <= tokens.length; i++) {
-                  grams.push(tokens.slice(i, i + n).join(' '));
-                }
-              }
-              return grams;
-            };
+        const targetZone = extractZone(targetRaw);
+        const targetCto = extractCtoNum(targetRaw);
+        const targetTower = extractTower(targetRaw);
 
-            const targetNgrams = buildNgrams(targetTokens);
+        logger.info(`submitGeonetActivation: Metadata Target -> Zona: ${targetZone}, CTO: ${targetCto}, Torre: ${targetTower}`);
 
-            const scores: Array<{
-              value: string;
-              text: string;
-              score: number;
-              overlap: number;
-              towerMatch: boolean;
-              reasons: string[];
-            }> = [];
+        let bestMatchValue = '';
+        let bestMatchScore = 0;
+        let bestMatchText = '';
 
-            apSelect.find('option').each((_i: number, opt: any) => {
-              const $opt = apSelect.find(opt);
-              const value = String($opt.attr('value') || '');
-              if (!value) return undefined;
-              const text = String($opt.text() || '');
-              const candNorm = this.normalizeText(text);
-              const candTokens = candNorm.split(' ').filter(Boolean);
+        apSelect.find('option').each((_i, opt) => {
+          const $opt = apSelect.find(opt);
+          const value = String($opt.attr('value') || '');
+          const text = String($opt.text() || '');
+          
+          if (!value || text.includes('---------')) return;
 
-              let score = 0;
-              const reasons: string[] = [];
+          const optNorm = this.normalizeText(text);
+          const optZone = extractZone(text);
+          const optCto = extractCtoNum(text);
+          const optTower = extractTower(text);
 
-              // substring exact
-              if (candNorm.includes(targetNorm) || targetNorm.includes(candNorm)) {
-                score += 1.5;
-                reasons.push('substring');
-              }
+          // 1. FILTRO DURO: Si la búsqueda tiene Zona/CTO/Torre explícita, 
+          // la opción DEBE coincidir o ser neutral. Si hay conflicto, DESCARTAR.
+          
+          // Si busco Zona 308 y la opción es Zona 307 -> Descartar
+          if (targetZone && optZone && targetZone !== optZone) return;
+          
+          // Si busco CTO 1 y la opción es CTO 2 -> Descartar
+          if (targetCto && optCto && targetCto !== optCto) return;
 
-              // n-gram exact matches (prefer longer grams)
-              for (const ng of targetNgrams) {
-                if (ng && candNorm.includes(ng)) {
-                  score += 1.0;
-                  reasons.push(`ngram:${ng}`);
-                  break;
-                }
-              }
+          // Si busco Torre A y la opción es Torre B -> Descartar
+          if (targetTower && optTower && targetTower !== optTower) return;
 
-              // token overlap (Jaccard-like)
-              const overlap = targetTokens.filter((t) => candTokens.includes(t)).length;
-              const unionSize = new Set([...targetTokens, ...candTokens]).size || 1;
-              score += (overlap / unionSize) * 0.5;
-              if (overlap > 0) reasons.push(`overlap:${overlap}`);
+          // 2. CÁLCULO DE PUNTAJE (Solo para los que pasaron el filtro)
+          let score = 0;
 
-              // tower match boost
-              const candTower = extractTowerLetter(text);
-              const towerMatch = targetTower && candTower && targetTower === candTower;
-              if (towerMatch) {
-                score += 0.9;
-                reasons.push('towerMatch');
-              }
+          // Coincidencia exacta de Zona (Gran bonus)
+          if (targetZone && optZone && targetZone === optZone) score += 50;
+          
+          // Coincidencia exacta de CTO (Gran bonus)
+          if (targetCto && optCto && targetCto === optCto) score += 50;
 
-              // location token boost
-              const locationShared = ['mirador', 'condominio', 'brisas', 'edificio', 'spliter'].filter((k) =>
-                targetNorm.includes(k) && candNorm.includes(k)
-              ).length;
-              if (locationShared > 0) {
-                score += locationShared * 0.35;
-                reasons.push(`locationShared:${locationShared}`);
-              }
+          // Coincidencia exacta de Torre
+          if (targetTower && optTower && targetTower === optTower) score += 40;
 
-              // numeric token boost
-              const extractNumbers = (arr: string[]) => arr.filter((t) => /^\d+$/.test(t));
-              const tNums = extractNumbers(targetTokens);
-              const cNums = extractNumbers(candTokens);
-              const numOverlap = tNums.filter((n) => cNums.includes(n)).length;
-              if (numOverlap > 0) {
-                score += 0.4 * numOverlap;
-                reasons.push(`numOverlap:${numOverlap}`);
-              }
+          // Coincidencia de texto general (Jaccard / Similitud)
+          // Esto ayuda a desempatar por el nombre del edificio o ubicación (ej: "Bicentenario")
+          const similarity = this.calculateSimilarityScore(targetNorm, optNorm);
+          score += similarity * 20;
 
-              // position/order boost: if target appears near end of candidate, pref boost
-              const pos = candNorm.indexOf(targetNorm);
-              if (pos >= 0) {
-                const rel = 1 - pos / Math.max(1, candNorm.length);
-                const posBoost = Math.min(0.25, rel * 0.25);
-                score += posBoost;
-                reasons.push('positionBoost');
-              }
+          // Si el texto de la opción contiene el texto buscado (substring), pequeño boost
+          if (optNorm.includes(targetNorm)) score += 10;
 
-              scores.push({ value, text, score, overlap, towerMatch: Boolean(towerMatch), reasons });
-              return undefined;
-            });
-
-            scores.sort((a, b) => b.score - a.score);
-            const top = scores.slice(0, 5).map((s) => ({ value: s.value, text: s.text, score: Number(s.score.toFixed(3)), reasons: s.reasons }));
-            logger.info(`submitGeonetActivation: ap candidate scores top=${JSON.stringify(top)}`);
-
-            if (scores.length > 0) {
-              const first = scores[0];
-              const second = scores[1];
-              const diff = second ? first.score - second.score : first.score;
-              if (first.score >= 1.0 || (first.towerMatch && first.score >= 0.8)) {
-                apValue = first.value;
-                logger.info(`submitGeonetActivation: ap selected by token-heuristic -> value="${apValue}" text="${first.text}" score=${first.score.toFixed(3)} reasons=${JSON.stringify(first.reasons)}`);
-              } else if (second && diff < 0.05) {
-                logger.warn(`submitGeonetActivation: ambiguous ap match for "${apName}" top1 score=${first.score.toFixed(3)} top2 score=${second.score.toFixed(3)}; choosing top1 but logging candidates`);
-                apValue = first.value;
-                logger.info(`submitGeonetActivation: ambiguous top1 -> value="${apValue}" text="${first.text}" reasons=${JSON.stringify(first.reasons)}`);
-              } else if (first.score >= 0.4) {
-                apValue = first.value;
-                logger.info(`submitGeonetActivation: ap selected by weaker heuristic -> value="${apValue}" text="${first.text}" score=${first.score.toFixed(3)} reasons=${JSON.stringify(first.reasons)}`);
-              } else {
-                logger.warn(`submitGeonetActivation: apName provided but no strong token match found="${apName}"; falling back to selected value`);
-                apValue = this.getSelectedOptionValue(apSelect);
-                logger.info(`submitGeonetActivation: fallback ap value="${apValue}" text="${this.findOptionTextByValue(apSelect, apValue)}"`);
-              }
-            } else {
-              logger.warn(`submitGeonetActivation: no ap candidates available; falling back to selected value`);
-              apValue = this.getSelectedOptionValue(apSelect);
-            }
+          if (score > bestMatchScore) {
+            bestMatchScore = score;
+            bestMatchValue = value;
+            bestMatchText = text;
           }
+        });
+
+        // 3. SELECCIÓN FINAL
+        // Definimos un umbral mínimo. Si buscamos "CTO 1" y encontramos "CTO 1" con Zona correcta, el score será > 100.
+        // Si no encontramos nada coherente, es mejor no forzar y dejar que el sistema falle o use el default.
+        if (bestMatchValue && bestMatchScore >= 40) { // Umbral de seguridad
+          apValue = bestMatchValue;
+          logger.info(`submitGeonetActivation: AP Seleccionado -> "${bestMatchText}" (Score: ${bestMatchScore})`);
+        } else {
+          logger.warn(`submitGeonetActivation: No se encontró un AP coincidente seguro para "${apName}". Score más alto: ${bestMatchScore}. Se usará el seleccionado por defecto.`);
+          apValue = this.getSelectedOptionValue(apSelect);
         }
+
       } else {
+        // Si no viene apName, usamos el seleccionado por defecto en el HTML
         apValue = this.getSelectedOptionValue(apSelect);
-        logger.info(`submitGeonetActivation: no apName provided; using selected value="${apValue}" text="${this.findOptionTextByValue(apSelect, apValue)}"`);
+        logger.info(`submitGeonetActivation: apName no provisto, usando default: "${apValue}"`);
       }
     } else {
       apValue = '';
     }
+
+    // ... (continúa con const fullName = ...)
 
     const fullName = `${request.firstName || ''} ${request.lastName || ''}`.trim();
     const activationId = this.getActivationIdFromUrl(activationLink);
