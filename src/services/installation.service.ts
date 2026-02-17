@@ -2511,30 +2511,68 @@ private async submitGeonetActivation(params: {
     let zonaValue = '';
     let apValue = '';
 
+    // --- HELPER: Extracción de Letras de Alcance (Ej: "A-B" -> ['a','b'], "Torre C" -> ['c']) ---
+    const extractScopeLetters = (s: string): string[] => {
+      const clean = s.toLowerCase();
+      const letters: Set<string> = new Set();
+      
+      // Caso rango "A-B" o "A - B"
+      const rangeMatch = clean.match(/\b([a-d])\s*[-]\s*([a-d])\b/);
+      if (rangeMatch) {
+        const start = rangeMatch[1].charCodeAt(0);
+        const end = rangeMatch[2].charCodeAt(0);
+        for (let i = start; i <= end; i++) letters.add(String.fromCharCode(i));
+      }
+
+      // Caso "Torre A", "Torres C y D", "Block A"
+      const specificMatches = clean.matchAll(/(?:torre|block|edificio|sector)s?\s*([a-z](?:\s*y\s*[a-z])?)/g);
+      for (const m of specificMatches) {
+        if (m[1]) {
+          const parts = m[1].split(/\s*y\s*/);
+          parts.forEach(p => letters.add(p.trim()));
+        }
+      }
+      
+      // Caso simple al final de string si no hay ID numérico: "Mirador Urbano A-B"
+      if (!/\d/.test(clean)) {
+         const endMatch = clean.match(/\b([a-z])[-]([a-z])\b/);
+         if (endMatch) {
+            const start = endMatch[1].charCodeAt(0);
+            const end = endMatch[2].charCodeAt(0);
+            for (let i = start; i <= end; i++) letters.add(String.fromCharCode(i));
+         }
+      }
+
+      return Array.from(letters);
+    };
+
+    // --- HELPER: Similitud Jaccard (para vetar nombres de lugares distintos) ---
+    const calculateNameSimilarity = (s1: string, s2: string): number => {
+        const t1 = new Set(s1.split(' ').filter(x => x.length > 2));
+        const t2 = new Set(s2.split(' ').filter(x => x.length > 2));
+        if (t1.size === 0 || t2.size === 0) return 0;
+        let intersection = 0;
+        t1.forEach(x => { if (t2.has(x)) intersection++; });
+        return intersection / (t1.size + t2.size - intersection);
+    };
+
     // --- 1. RESOLVER ROUTER ---
     if (routerName && routerSelect && routerSelect.length > 0) {
       routerValue = this.findOptionId(routerSelect, String(routerName));
-      if (!routerValue) {
-        logger.warn(`submitGeonetActivation: routerName provided but no match found="${routerName}"; falling back to selected value`);
-        routerValue = this.getSelectedOptionValue(routerSelect);
-      }
+      if (!routerValue) routerValue = this.getSelectedOptionValue(routerSelect);
     } else {
       routerValue = this.getSelectedOptionValue(routerSelect);
     }
 
-    // --- 2. RESOLVER ZONA (Mejorada: SmartOLT <-> Wisphub) ---
+    // --- 2. RESOLVER ZONA (Fix: Soporte "A-B" vs "Torre A y B") ---
     if (zonaSelect && zonaSelect.length > 0) {
       if (zonaName && String(zonaName).trim()) {
         const targetRaw = String(zonaName);
-        logger.info(`submitGeonetActivation: Buscando match de ZONA para: "${targetRaw}"`);
-
-        // Extraer ID (ej: 306, 201) de "Zona 306", "Z306", "Vlan 306"
+        
         const extractZoneId = (s: string) => {
           const m = s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i);
           return m ? m[1] : null;
         };
-
-        // Limpiar nombre
         const getCleanZoneName = (s: string) => {
           return s.toLowerCase()
             .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/g, '')
@@ -2544,36 +2582,47 @@ private async submitGeonetActivation(params: {
 
         const targetId = extractZoneId(targetRaw);
         const targetCleanName = getCleanZoneName(targetRaw);
-        const targetTokens = targetCleanName.split(' ').filter(t => t.length > 2);
+        const targetLetters = extractScopeLetters(targetRaw); // ['a', 'b'] para "Mirador Urbano A-B"
+
+        logger.info(`submitGeonetActivation: ZONA Target -> ID:${targetId} Letras:[${targetLetters}] Nombre:"${targetCleanName}"`);
 
         let bestZoneValue = '';
         let bestZoneScore = -1;
         let bestZoneText = '';
 
         zonaSelect.find('option').each((_i, opt) => {
-          const $opt = zonaSelect.find(opt);
-          const value = String($opt.attr('value') || '');
-          const text = String($opt.text() || '');
+          const value = String($(opt).attr('value') || '');
+          const text = String($(opt).text() || '');
           if (!value || text.includes('---------')) return;
 
           const optId = extractZoneId(text);
+          const optLetters = extractScopeLetters(text); // ['c', 'd'] para "Torre C y D"
           const optCleanName = getCleanZoneName(text);
 
-          // VETO: Si ambos tienen ID y son distintos -> DESCARTAR
+          // VETO 1: IDs Numéricos distintos
           if (targetId && optId && targetId !== optId) return;
 
-          let score = 0;
-          // Coincidencia ID (Prioridad Absoluta)
-          if (targetId && optId && targetId === optId) score += 60;
-          
-          // Coincidencia Nombre (Tokens)
-          let tokenMatches = 0;
-          targetTokens.forEach(token => {
-            if (optCleanName.includes(token)) { tokenMatches++; score += 20; }
-          });
+          // VETO 2: Letras de Alcance Conflictivas
+          // Si target tiene letras (A,B) y option tiene letras (C,D) y NO hay intersección -> VETO
+          if (targetLetters.length > 0 && optLetters.length > 0) {
+             const hasIntersection = targetLetters.some(l => optLetters.includes(l));
+             if (!hasIntersection) return; // Rechaza "A-B" contra "C-D"
+          }
 
-          // Coincidencia Exacta
-          if (targetCleanName === optCleanName && targetCleanName.length > 3) score += 30;
+          let score = 0;
+          
+          // Match ID Numérico
+          if (targetId && optId && targetId === optId) score += 60;
+
+          // Match Letras (Muy importante si no hay ID)
+          if (targetLetters.length > 0 && optLetters.length > 0) {
+             const overlap = targetLetters.filter(l => optLetters.includes(l)).length;
+             score += (overlap * 30); // Gran boost si coinciden letras
+          }
+
+          // Match Nombre
+          const sim = calculateNameSimilarity(targetCleanName, optCleanName);
+          if (sim > 0.3) score += (sim * 40);
 
           if (score > bestZoneScore) {
             bestZoneScore = score;
@@ -2582,11 +2631,11 @@ private async submitGeonetActivation(params: {
           }
         });
 
-        if (bestZoneValue && bestZoneScore >= 40) {
+        if (bestZoneValue && bestZoneScore >= 30) {
           zonaValue = bestZoneValue;
           logger.info(`submitGeonetActivation: ZONA MATCH -> "${bestZoneText}" (Score: ${bestZoneScore})`);
         } else {
-          logger.warn(`submitGeonetActivation: Fallback Zona Default (Score: ${bestZoneScore})`);
+          logger.warn(`submitGeonetActivation: Fallback Zona Default`);
           zonaValue = this.getSelectedOptionValue(zonaSelect);
         }
       } else {
@@ -2596,89 +2645,86 @@ private async submitGeonetActivation(params: {
       zonaValue = '';
     }
 
-    // --- 3. RESOLVER AP/NAP/SECTORIAL (Mejorada: SmartOLT <-> Wisphub) ---
+    // --- 3. RESOLVER AP (Fix: Veto por nombre de lugar) ---
     if (apSelect && apSelect.length > 0) {
       if (apName && String(apName).trim()) {
         const targetRaw = String(apName);
-        logger.info(`submitGeonetActivation: Buscando match de AP para: "${targetRaw}"`);
+        
+        const extractMeta = (s: string) => {
+           const zone = s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
+           const cto = s.match(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/i)?.[1];
+           const tower = s.match(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/i)?.[1]?.toLowerCase();
+           return { zone, cto, tower };
+        };
 
-        const extractZoneNum = (s: string) => {
-          const m = s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i);
-          return m ? m[1] : null;
-        };
-        const extractCtoNum = (s: string) => {
-          // Busca CTO, NAP, ODF, Spliter, Splitter + Digitos
-          let m = s.match(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/i);
-          return m ? m[1] : null;
-        };
-        const extractTower = (s: string) => {
-          const m = s.match(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/i);
-          return m ? this.normalizeText(m[1]) : null;
-        };
         const getCleanLocationName = (s: string) => {
           return s.toLowerCase()
             .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '')
             .replace(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/g, '')
             .replace(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/g, '')
-            .replace(/\b(de|del|el|la|los|las|y|en|ii|iii|iv|v|ix)\b/g, '')
+            .replace(/\b(de|del|el|la|los|las|y|en)\b/g, '')
             .replace(/[-:._()]/g, ' ')
             .replace(/\s+/g, ' ').trim();
         };
 
-        const targetZone = extractZoneNum(targetRaw);
-        const targetCto = extractCtoNum(targetRaw);
-        const targetTower = extractTower(targetRaw);
-        const targetCleanName = getCleanLocationName(targetRaw);
-        const targetTokens = targetCleanName.split(' ').filter(t => t.length > 2);
+        const tMeta = extractMeta(targetRaw);
+        const tCleanName = getCleanLocationName(targetRaw);
+        
+        logger.info(`submitGeonetActivation: AP Target -> Meta:${JSON.stringify(tMeta)} Nombre:"${tCleanName}"`);
 
-        let bestMatchValue = '';
-        let bestMatchScore = -1;
-        let bestMatchText = '';
+        let bestApValue = '';
+        let bestApScore = -1;
+        let bestApText = '';
 
         apSelect.find('option').each((_i, opt) => {
-          const $opt = apSelect.find(opt);
-          const value = String($opt.attr('value') || '');
-          const text = String($opt.text() || '');
+          const value = String($(opt).attr('value') || '');
+          const text = String($(opt).text() || '');
           if (!value || text.includes('---------')) return;
 
-          const optZone = extractZoneNum(text);
-          const optCto = extractCtoNum(text);
-          const optTower = extractTower(text);
-          const optCleanName = getCleanLocationName(text);
+          const oMeta = extractMeta(text);
+          const oCleanName = getCleanLocationName(text);
 
-          // VETOS:
-          if (targetZone && optZone && targetZone !== optZone) return; // Zona distinta
-          if (targetTower && optTower && targetTower !== optTower) return; // Torre distinta
-          // Veto CTO: Solo si AMBOS tienen número y es distinto. (Permite match "Spliter 1" -> "Edificio Genérico")
-          if (targetCto && optCto && targetCto !== optCto) return;
+          // VETOS DUROS
+          if (tMeta.zone && oMeta.zone && tMeta.zone !== oMeta.zone) return;
+          
+          // Veto CTO: Solo si ambos tienen y son distintos (Spliter 1 vs CTO 2)
+          if (tMeta.cto && oMeta.cto && tMeta.cto !== oMeta.cto) return;
+
+          // VETO POR NOMBRE DE LUGAR (Nuevo y Crítico)
+          // Si SmartOLT dice "Mirador Urbano" y Wisphub dice "Puertas de Lircay",
+          // la similitud será 0. Si es < 0.2, descartamos, aunque coincida "Torre A".
+          const nameSim = calculateNameSimilarity(tCleanName, oCleanName);
+          if (tCleanName.length > 5 && oCleanName.length > 5 && nameSim < 0.2) {
+             // Excepción: Si coinciden zona exacta y cto exacto, confiamos en metadata y perdonamos nombre
+             const metadataMatch = (tMeta.zone && tMeta.zone === oMeta.zone) || (tMeta.cto && tMeta.cto === oMeta.cto);
+             if (!metadataMatch) return; 
+          }
 
           let score = 0;
-          // A. Coincidencia Palabras Clave (Nombre Lugar) - Prioridad Alta
-          targetTokens.forEach(token => {
-            if (optCleanName.includes(token)) score += 40;
-          });
+          
+          // 1. Similitud de Nombre (Base fuerte)
+          score += (nameSim * 60);
 
-          // B. Coincidencia Metadata
-          if (targetZone && optZone && targetZone === optZone) score += 30;
-          if (targetCto && optCto && targetCto === optCto) score += 30;
-          if (targetTower && optTower && targetTower === optTower) score += 25;
+          // 2. Metadata Matches
+          if (tMeta.zone && oMeta.zone && tMeta.zone === oMeta.zone) score += 30;
+          if (tMeta.cto && oMeta.cto && tMeta.cto === oMeta.cto) score += 30;
+          if (tMeta.tower && oMeta.tower && tMeta.tower === oMeta.tower) score += 20;
 
-          // C. Match Exacto Nombre Limpio
-          if (targetCleanName === optCleanName && targetCleanName.length > 3) score += 50;
+          // 3. Match exacto de nombre limpio
+          if (tCleanName === oCleanName && tCleanName.length > 3) score += 40;
 
-          if (score > bestMatchScore) {
-            bestMatchScore = score;
-            bestMatchValue = value;
-            bestMatchText = text;
+          if (score > bestApScore) {
+            bestApScore = score;
+            bestApValue = value;
+            bestApText = text;
           }
         });
 
-        // Umbral bajo (20) para permitir casos donde solo coincida Edificio + Torre
-        if (bestMatchValue && bestMatchScore >= 20) {
-          apValue = bestMatchValue;
-          logger.info(`submitGeonetActivation: AP MATCH -> "${bestMatchText}" (Score: ${bestMatchScore})`);
+        if (bestApValue && bestApScore >= 30) {
+          apValue = bestApValue;
+          logger.info(`submitGeonetActivation: AP MATCH -> "${bestApText}" (Score: ${bestApScore})`);
         } else {
-          logger.warn(`submitGeonetActivation: Fallback AP Default (Score: ${bestMatchScore})`);
+          logger.warn(`submitGeonetActivation: Fallback AP Default`);
           apValue = this.getSelectedOptionValue(apSelect);
         }
       } else {
@@ -2688,7 +2734,7 @@ private async submitGeonetActivation(params: {
       apValue = '';
     }
 
-    // --- RESTO DE LA LÓGICA DE SUBMIT ---
+    // --- RESTO DE LA FUNCION (Form Submission) ---
     const fullName = `${request.firstName || ''} ${request.lastName || ''}`.trim();
     const activationId = this.getActivationIdFromUrl(activationLink);
     const rawFirstName = (request.firstName || '').trim();
@@ -2775,15 +2821,13 @@ private async submitGeonetActivation(params: {
     this.throwIfRetryableStatus(response, 'POST activacion');
     this.throwIfGeonetAuthRequired(response, 'POST activacion');
 
-    const responsePreview =
-      typeof response.data === 'string'
+    const responsePreview = typeof response.data === 'string'
         ? response.data.slice(0, 800)
         : JSON.stringify(response.data).slice(0, 800);
     const locationHeader = response.headers?.location;
-    logger.info(
-      `Geonet activation POST status=${response.status} location=${locationHeader || 'n/a'} body=${responsePreview}`
-    );
+    logger.info(`Geonet activation POST status=${response.status} location=${locationHeader || 'n/a'} body=${responsePreview}`);
 
+    // Parseo de errores (igual que antes)
     if (typeof response.data === 'string' && response.data.includes('<form')) {
       try {
         const html = response.data;
@@ -2792,40 +2836,9 @@ private async submitGeonetActivation(params: {
         $form('ul.errorlist li, .errorlist li, .errorlist').each((_i, el) => {
           const text = $form(el).text().trim();
           if (text) errorTexts.push(text);
-          return undefined;
         });
-
-        const missingRequired: string[] = [];
-        $form('form#agregar-cliente :input').each((_i, el) => {
-          const $el = $form(el);
-          const name = $el.attr('name');
-          if (!name) return undefined;
-
-          const required =
-            $el.is('[required]') ||
-            $el.attr('data-rule-required') === 'true' ||
-            $el.hasClass('control-label-required');
-
-          if (!required) return undefined;
-
-          let value = '';
-          if ($el.is('select')) {
-            value = String($el.val() ?? '');
-          } else if ($el.is('textarea')) {
-            value = ($el.text() || '').trim();
-          } else {
-            value = String($el.attr('value') ?? '').trim();
-          }
-
-          if (!value) missingRequired.push(name);
-          return undefined;
-        });
-
         if (errorTexts.length > 0) {
           logger.warn(`Geonet activation form errors: ${JSON.stringify(errorTexts.slice(0, 20))}`);
-        }
-        if (missingRequired.length > 0) {
-          logger.warn(`Geonet activation missing required fields: ${JSON.stringify(missingRequired)}`);
         }
       } catch (parseErr) {
         logger.warn(`Geonet activation HTML parse failed: ${String(parseErr)}`);
