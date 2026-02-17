@@ -2504,14 +2504,69 @@ export class InstallationService {
     }
 
     // resolve ap / NAP / Sectorial
-    if (apName && apSelect && apSelect.length > 0) {
-      apValue = this.findOptionId(apSelect, String(apName));
-      if (!apValue) {
-        logger.warn(`submitGeonetActivation: apName provided but no match found="${apName}"; falling back to selected value`);
+    // resolve ap / NAP / Sectorial (improved matching with detailed logs)
+    if (apSelect && apSelect.length > 0) {
+      const availableApOptions = this.extractOptionTexts(apSelect);
+      logger.info(
+        `submitGeonetActivation: ap options count=${availableApOptions.length} sample=${JSON.stringify(
+          availableApOptions.slice(0, 10)
+        )}`
+      );
+
+      if (apName && String(apName).trim()) {
+        logger.info(`submitGeonetActivation: attempting to resolve apName="${apName}"`);
+        // Primary fuzzy match using existing helper
+        let resolvedAp = this.findOptionId(apSelect, String(apName));
+        if (resolvedAp) {
+          logger.info(
+            `submitGeonetActivation: apName matched via findOptionId -> value="${resolvedAp}" text="${this.findOptionTextByValue(
+              apSelect,
+              resolvedAp
+            )}"`
+          );
+          apValue = resolvedAp;
+        } else {
+          // Try attribute-based / substring matching as a looser fallback
+          const targetNorm = this.normalizeText(String(apName));
+          let foundValue = '';
+          apSelect.find('option').each((_i: number, opt: any) => {
+            if (foundValue) return undefined;
+            const $opt = apSelect.find(opt);
+            const value = String($opt.attr('value') || '');
+            if (!value) return undefined;
+            const text = String($opt.text() || '');
+            const title = String($opt.attr('title') || '');
+            const dataAttrs = [
+              $opt.attr('data-ap') || $opt.attr('data_ap'),
+              $opt.attr('data-nap') || $opt.attr('data_nap'),
+              $opt.attr('data-name') || $opt.attr('data_name'),
+            ]
+              .filter(Boolean)
+              .join(' ');
+            const combined = `${text} ${title} ${dataAttrs} ${value}`;
+            const combinedNorm = this.normalizeText(combined);
+            if (combinedNorm.includes(targetNorm) || targetNorm.includes(this.normalizeText(text))) {
+              foundValue = value;
+              logger.info(`submitGeonetActivation: ap matched via attribute/substr -> value="${value}" text="${text}"`);
+              return undefined;
+            }
+            return undefined;
+          });
+
+          if (foundValue) {
+            apValue = foundValue;
+          } else {
+            logger.warn(`submitGeonetActivation: apName provided but no match found="${apName}"; falling back to selected value`);
+            apValue = this.getSelectedOptionValue(apSelect);
+            logger.info(`submitGeonetActivation: fallback ap value="${apValue}" text="${this.findOptionTextByValue(apSelect, apValue)}"`);
+          }
+        }
+      } else {
         apValue = this.getSelectedOptionValue(apSelect);
+        logger.info(`submitGeonetActivation: no apName provided; using selected value="${apValue}" text="${this.findOptionTextByValue(apSelect, apValue)}"`);
       }
     } else {
-      apValue = this.getSelectedOptionValue(apSelect);
+      apValue = '';
     }
 
     const fullName = `${request.firstName || ''} ${request.lastName || ''}`.trim();
