@@ -63,7 +63,7 @@ export class InstallationController {
 
   public async lookupPreinstallation(req: Request, res: Response): Promise<Response> {
     try {
-      const { clientName, technicianName, planName, installationRequestId } = req.body ?? {};
+      const { clientName, technicianName, planName, installationRequestId, agreedInstallationDate } = req.body ?? {};
       if (!clientName || !technicianName) {
         return res
           .status(400)
@@ -85,6 +85,10 @@ export class InstallationController {
         installationRequestId:
           installationRequestId !== undefined && installationRequestId !== null
             ? Number(installationRequestId)
+            : undefined,
+        agreedInstallationDate:
+          agreedInstallationDate !== undefined && agreedInstallationDate !== null
+            ? String(agreedInstallationDate)
             : undefined,
         zonaName: zonaName !== undefined && zonaName !== null ? String(zonaName) : undefined,
         routerName: routerName !== undefined && routerName !== null ? String(routerName) : undefined,

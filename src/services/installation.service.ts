@@ -382,6 +382,7 @@ export class InstallationService {
     zonaName?: string;
     routerName?: string;
     apName?: string;
+    agreedInstallationDate?: string | Date;
   }): Promise<{
     activationLink: string;
     technicianId: string;
@@ -389,7 +390,7 @@ export class InstallationService {
     firstAvailableIp: string | null;
     activationPostStatus?: number;
   }> {
-    const { clientName, technicianName, planName, installationRequestId } = params;
+    const { clientName, technicianName, planName, installationRequestId, agreedInstallationDate } = params;
     let effectivePlanName = planName;
     let resolvedRequestId: number | undefined = installationRequestId;
     let resolvedRequest: InstallationRequest | null = null;
@@ -402,6 +403,25 @@ export class InstallationService {
       resolvedRequest = await this.findInstallationRequestById(resolvedRequestId);
       if (resolvedRequest?.plan) {
         effectivePlanName = resolvedRequest.plan;
+      }
+    }
+
+    // If the DB record lacks an agreedInstallationDate but the caller provided one,
+    // persist it so later submission to Geonet has the required field.
+    if (resolvedRequest && !resolvedRequest.agreedInstallationDate && agreedInstallationDate) {
+      try {
+        await this.ensureDataSource();
+        const repo = AppDataSource.getRepository(InstallationRequest);
+        const parsed = new Date(String(agreedInstallationDate));
+        if (!Number.isNaN(parsed.getTime())) {
+          resolvedRequest.agreedInstallationDate = parsed;
+          await repo.save(resolvedRequest as any);
+          logger.info(`lookupPreinstallationActivation: persisted agreedInstallationDate=${parsed.toISOString()} for request id=${resolvedRequest.id}`);
+        } else {
+          logger.warn(`lookupPreinstallationActivation: provided agreedInstallationDate is invalid: ${String(agreedInstallationDate)}`);
+        }
+      } catch (e: any) {
+        logger.warn(`lookupPreinstallationActivation: could not persist agreedInstallationDate: ${String(e)}`);
       }
     }
 
