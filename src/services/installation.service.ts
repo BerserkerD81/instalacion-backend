@@ -2444,7 +2444,7 @@ export class InstallationService {
     return `${day}/${month}/${year} ${hours}:${minutes}`;
   }
 
-  private async submitGeonetActivation(params: {
+private async submitGeonetActivation(params: {
     client: AxiosInstance;
     activationLink: string;
     technicianId: string;
@@ -2511,7 +2511,7 @@ export class InstallationService {
     let zonaValue = '';
     let apValue = '';
 
-    // resolve router
+    // --- 1. RESOLVER ROUTER ---
     if (routerName && routerSelect && routerSelect.length > 0) {
       routerValue = this.findOptionId(routerSelect, String(routerName));
       if (!routerValue) {
@@ -2522,95 +2522,149 @@ export class InstallationService {
       routerValue = this.getSelectedOptionValue(routerSelect);
     }
 
-    // resolve zona
-    if (zonaName && zonaSelect && zonaSelect.length > 0) {
-      zonaValue = this.findOptionId(zonaSelect, String(zonaName));
-      if (!zonaValue) {
-        logger.warn(`submitGeonetActivation: zonaName provided but no match found="${zonaName}"; falling back to selected value`);
+    // --- 2. RESOLVER ZONA (Mejorada: SmartOLT <-> Wisphub) ---
+    if (zonaSelect && zonaSelect.length > 0) {
+      if (zonaName && String(zonaName).trim()) {
+        const targetRaw = String(zonaName);
+        logger.info(`submitGeonetActivation: Buscando match de ZONA para: "${targetRaw}"`);
+
+        // Extraer ID (ej: 306, 201) de "Zona 306", "Z306", "Vlan 306"
+        const extractZoneId = (s: string) => {
+          const m = s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i);
+          return m ? m[1] : null;
+        };
+
+        // Limpiar nombre
+        const getCleanZoneName = (s: string) => {
+          return s.toLowerCase()
+            .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/g, '')
+            .replace(/[-:._()]/g, ' ')
+            .replace(/\s+/g, ' ').trim();
+        };
+
+        const targetId = extractZoneId(targetRaw);
+        const targetCleanName = getCleanZoneName(targetRaw);
+        const targetTokens = targetCleanName.split(' ').filter(t => t.length > 2);
+
+        let bestZoneValue = '';
+        let bestZoneScore = -1;
+        let bestZoneText = '';
+
+        zonaSelect.find('option').each((_i, opt) => {
+          const $opt = zonaSelect.find(opt);
+          const value = String($opt.attr('value') || '');
+          const text = String($opt.text() || '');
+          if (!value || text.includes('---------')) return;
+
+          const optId = extractZoneId(text);
+          const optCleanName = getCleanZoneName(text);
+
+          // VETO: Si ambos tienen ID y son distintos -> DESCARTAR
+          if (targetId && optId && targetId !== optId) return;
+
+          let score = 0;
+          // Coincidencia ID (Prioridad Absoluta)
+          if (targetId && optId && targetId === optId) score += 60;
+          
+          // Coincidencia Nombre (Tokens)
+          let tokenMatches = 0;
+          targetTokens.forEach(token => {
+            if (optCleanName.includes(token)) { tokenMatches++; score += 20; }
+          });
+
+          // Coincidencia Exacta
+          if (targetCleanName === optCleanName && targetCleanName.length > 3) score += 30;
+
+          if (score > bestZoneScore) {
+            bestZoneScore = score;
+            bestZoneValue = value;
+            bestZoneText = text;
+          }
+        });
+
+        if (bestZoneValue && bestZoneScore >= 40) {
+          zonaValue = bestZoneValue;
+          logger.info(`submitGeonetActivation: ZONA MATCH -> "${bestZoneText}" (Score: ${bestZoneScore})`);
+        } else {
+          logger.warn(`submitGeonetActivation: Fallback Zona Default (Score: ${bestZoneScore})`);
+          zonaValue = this.getSelectedOptionValue(zonaSelect);
+        }
+      } else {
         zonaValue = this.getSelectedOptionValue(zonaSelect);
       }
     } else {
-      zonaValue = this.getSelectedOptionValue(zonaSelect);
+      zonaValue = '';
     }
 
-// ... (código anterior del método submitGeonetActivation)
-
-    // resolve ap / NAP / Sectorial (Lógica Mejorada y Estructurada)
+    // --- 3. RESOLVER AP/NAP/SECTORIAL (Mejorada: SmartOLT <-> Wisphub) ---
     if (apSelect && apSelect.length > 0) {
       if (apName && String(apName).trim()) {
         const targetRaw = String(apName);
-        const targetNorm = this.normalizeText(targetRaw);
-        
-        logger.info(`submitGeonetActivation: Resolviendo AP para: "${targetRaw}"`);
+        logger.info(`submitGeonetActivation: Buscando match de AP para: "${targetRaw}"`);
 
-        // Helpers para extraer metadatos específicos basados en tu lista JSON
-        const extractZone = (s: string) => {
-          const m = s.match(/(?:zona|z)\s*[-:.]?\s*(\d+)/i);
-          return m ? m[1] : null; // Retorna "308", "405", etc.
+        const extractZoneNum = (s: string) => {
+          const m = s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i);
+          return m ? m[1] : null;
         };
         const extractCtoNum = (s: string) => {
-          const m = s.match(/(?:cto|nap|odf)\s*[-:.]?\s*(\d+)/i);
-          return m ? m[1] : null; // Retorna "8", "1", etc.
+          // Busca CTO, NAP, ODF, Spliter, Splitter + Digitos
+          let m = s.match(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/i);
+          return m ? m[1] : null;
         };
         const extractTower = (s: string) => {
-          // Busca "Torre A", "Torre 4", "Torre D"
-          const m = s.match(/(?:torre|edificio)\s*[-:.]?\s*([a-z0-9]+)/i);
+          const m = s.match(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/i);
           return m ? this.normalizeText(m[1]) : null;
         };
+        const getCleanLocationName = (s: string) => {
+          return s.toLowerCase()
+            .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '')
+            .replace(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/g, '')
+            .replace(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/g, '')
+            .replace(/\b(de|del|el|la|los|las|y|en|ii|iii|iv|v|ix)\b/g, '')
+            .replace(/[-:._()]/g, ' ')
+            .replace(/\s+/g, ' ').trim();
+        };
 
-        const targetZone = extractZone(targetRaw);
+        const targetZone = extractZoneNum(targetRaw);
         const targetCto = extractCtoNum(targetRaw);
         const targetTower = extractTower(targetRaw);
-
-        logger.info(`submitGeonetActivation: Metadata Target -> Zona: ${targetZone}, CTO: ${targetCto}, Torre: ${targetTower}`);
+        const targetCleanName = getCleanLocationName(targetRaw);
+        const targetTokens = targetCleanName.split(' ').filter(t => t.length > 2);
 
         let bestMatchValue = '';
-        let bestMatchScore = 0;
+        let bestMatchScore = -1;
         let bestMatchText = '';
 
         apSelect.find('option').each((_i, opt) => {
           const $opt = apSelect.find(opt);
           const value = String($opt.attr('value') || '');
           const text = String($opt.text() || '');
-          
           if (!value || text.includes('---------')) return;
 
-          const optNorm = this.normalizeText(text);
-          const optZone = extractZone(text);
+          const optZone = extractZoneNum(text);
           const optCto = extractCtoNum(text);
           const optTower = extractTower(text);
+          const optCleanName = getCleanLocationName(text);
 
-          // 1. FILTRO DURO: Si la búsqueda tiene Zona/CTO/Torre explícita, 
-          // la opción DEBE coincidir o ser neutral. Si hay conflicto, DESCARTAR.
-          
-          // Si busco Zona 308 y la opción es Zona 307 -> Descartar
-          if (targetZone && optZone && targetZone !== optZone) return;
-          
-          // Si busco CTO 1 y la opción es CTO 2 -> Descartar
+          // VETOS:
+          if (targetZone && optZone && targetZone !== optZone) return; // Zona distinta
+          if (targetTower && optTower && targetTower !== optTower) return; // Torre distinta
+          // Veto CTO: Solo si AMBOS tienen número y es distinto. (Permite match "Spliter 1" -> "Edificio Genérico")
           if (targetCto && optCto && targetCto !== optCto) return;
 
-          // Si busco Torre A y la opción es Torre B -> Descartar
-          if (targetTower && optTower && targetTower !== optTower) return;
-
-          // 2. CÁLCULO DE PUNTAJE (Solo para los que pasaron el filtro)
           let score = 0;
+          // A. Coincidencia Palabras Clave (Nombre Lugar) - Prioridad Alta
+          targetTokens.forEach(token => {
+            if (optCleanName.includes(token)) score += 40;
+          });
 
-          // Coincidencia exacta de Zona (Gran bonus)
-          if (targetZone && optZone && targetZone === optZone) score += 50;
-          
-          // Coincidencia exacta de CTO (Gran bonus)
-          if (targetCto && optCto && targetCto === optCto) score += 50;
+          // B. Coincidencia Metadata
+          if (targetZone && optZone && targetZone === optZone) score += 30;
+          if (targetCto && optCto && targetCto === optCto) score += 30;
+          if (targetTower && optTower && targetTower === optTower) score += 25;
 
-          // Coincidencia exacta de Torre
-          if (targetTower && optTower && targetTower === optTower) score += 40;
-
-          // Coincidencia de texto general (Jaccard / Similitud)
-          // Esto ayuda a desempatar por el nombre del edificio o ubicación (ej: "Bicentenario")
-          const similarity = this.calculateSimilarityScore(targetNorm, optNorm);
-          score += similarity * 20;
-
-          // Si el texto de la opción contiene el texto buscado (substring), pequeño boost
-          if (optNorm.includes(targetNorm)) score += 10;
+          // C. Match Exacto Nombre Limpio
+          if (targetCleanName === optCleanName && targetCleanName.length > 3) score += 50;
 
           if (score > bestMatchScore) {
             bestMatchScore = score;
@@ -2619,28 +2673,22 @@ export class InstallationService {
           }
         });
 
-        // 3. SELECCIÓN FINAL
-        // Definimos un umbral mínimo. Si buscamos "CTO 1" y encontramos "CTO 1" con Zona correcta, el score será > 100.
-        // Si no encontramos nada coherente, es mejor no forzar y dejar que el sistema falle o use el default.
-        if (bestMatchValue && bestMatchScore >= 40) { // Umbral de seguridad
+        // Umbral bajo (20) para permitir casos donde solo coincida Edificio + Torre
+        if (bestMatchValue && bestMatchScore >= 20) {
           apValue = bestMatchValue;
-          logger.info(`submitGeonetActivation: AP Seleccionado -> "${bestMatchText}" (Score: ${bestMatchScore})`);
+          logger.info(`submitGeonetActivation: AP MATCH -> "${bestMatchText}" (Score: ${bestMatchScore})`);
         } else {
-          logger.warn(`submitGeonetActivation: No se encontró un AP coincidente seguro para "${apName}". Score más alto: ${bestMatchScore}. Se usará el seleccionado por defecto.`);
+          logger.warn(`submitGeonetActivation: Fallback AP Default (Score: ${bestMatchScore})`);
           apValue = this.getSelectedOptionValue(apSelect);
         }
-
       } else {
-        // Si no viene apName, usamos el seleccionado por defecto en el HTML
         apValue = this.getSelectedOptionValue(apSelect);
-        logger.info(`submitGeonetActivation: apName no provisto, usando default: "${apValue}"`);
       }
     } else {
       apValue = '';
     }
 
-    // ... (continúa con const fullName = ...)
-
+    // --- RESTO DE LA LÓGICA DE SUBMIT ---
     const fullName = `${request.firstName || ''} ${request.lastName || ''}`.trim();
     const activationId = this.getActivationIdFromUrl(activationLink);
     const rawFirstName = (request.firstName || '').trim();
