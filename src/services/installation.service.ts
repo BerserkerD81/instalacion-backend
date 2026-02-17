@@ -2556,9 +2556,136 @@ export class InstallationService {
           if (foundValue) {
             apValue = foundValue;
           } else {
-            logger.warn(`submitGeonetActivation: apName provided but no match found="${apName}"; falling back to selected value`);
-            apValue = this.getSelectedOptionValue(apSelect);
-            logger.info(`submitGeonetActivation: fallback ap value="${apValue}" text="${this.findOptionTextByValue(apSelect, apValue)}"`);
+            // Stronger heuristic: combine substring/ngram/order/tower/zone boosts.
+            const targetNorm = this.normalizeText(String(apName));
+            const targetTokens = targetNorm.split(' ').filter(Boolean);
+            const extractTowerLetter = (s: string) => {
+              const m = String(s).match(/torre\s*[:#\-]?\s*([A-Za-z0-9])/i);
+              return m ? this.normalizeText(m[1]) : '';
+            };
+            const targetTower = extractTowerLetter(apName);
+
+            const buildNgrams = (tokens: string[], minN = 2, maxN = 4) => {
+              const grams: string[] = [];
+              const nMax = Math.min(maxN, tokens.length);
+              for (let n = nMax; n >= Math.max(minN, 2); n--) {
+                for (let i = 0; i + n <= tokens.length; i++) {
+                  grams.push(tokens.slice(i, i + n).join(' '));
+                }
+              }
+              return grams;
+            };
+
+            const targetNgrams = buildNgrams(targetTokens);
+
+            const scores: Array<{
+              value: string;
+              text: string;
+              score: number;
+              overlap: number;
+              towerMatch: boolean;
+              reasons: string[];
+            }> = [];
+
+            apSelect.find('option').each((_i: number, opt: any) => {
+              const $opt = apSelect.find(opt);
+              const value = String($opt.attr('value') || '');
+              if (!value) return undefined;
+              const text = String($opt.text() || '');
+              const candNorm = this.normalizeText(text);
+              const candTokens = candNorm.split(' ').filter(Boolean);
+
+              let score = 0;
+              const reasons: string[] = [];
+
+              // substring exact
+              if (candNorm.includes(targetNorm) || targetNorm.includes(candNorm)) {
+                score += 1.5;
+                reasons.push('substring');
+              }
+
+              // n-gram exact matches (prefer longer grams)
+              for (const ng of targetNgrams) {
+                if (ng && candNorm.includes(ng)) {
+                  score += 1.0;
+                  reasons.push(`ngram:${ng}`);
+                  break;
+                }
+              }
+
+              // token overlap (Jaccard-like)
+              const overlap = targetTokens.filter((t) => candTokens.includes(t)).length;
+              const unionSize = new Set([...targetTokens, ...candTokens]).size || 1;
+              score += (overlap / unionSize) * 0.5;
+              if (overlap > 0) reasons.push(`overlap:${overlap}`);
+
+              // tower match boost
+              const candTower = extractTowerLetter(text);
+              const towerMatch = targetTower && candTower && targetTower === candTower;
+              if (towerMatch) {
+                score += 0.9;
+                reasons.push('towerMatch');
+              }
+
+              // location token boost
+              const locationShared = ['mirador', 'condominio', 'brisas', 'edificio', 'spliter'].filter((k) =>
+                targetNorm.includes(k) && candNorm.includes(k)
+              ).length;
+              if (locationShared > 0) {
+                score += locationShared * 0.35;
+                reasons.push(`locationShared:${locationShared}`);
+              }
+
+              // numeric token boost
+              const extractNumbers = (arr: string[]) => arr.filter((t) => /^\d+$/.test(t));
+              const tNums = extractNumbers(targetTokens);
+              const cNums = extractNumbers(candTokens);
+              const numOverlap = tNums.filter((n) => cNums.includes(n)).length;
+              if (numOverlap > 0) {
+                score += 0.4 * numOverlap;
+                reasons.push(`numOverlap:${numOverlap}`);
+              }
+
+              // position/order boost: if target appears near end of candidate, pref boost
+              const pos = candNorm.indexOf(targetNorm);
+              if (pos >= 0) {
+                const rel = 1 - pos / Math.max(1, candNorm.length);
+                const posBoost = Math.min(0.25, rel * 0.25);
+                score += posBoost;
+                reasons.push('positionBoost');
+              }
+
+              scores.push({ value, text, score, overlap, towerMatch: Boolean(towerMatch), reasons });
+              return undefined;
+            });
+
+            scores.sort((a, b) => b.score - a.score);
+            const top = scores.slice(0, 5).map((s) => ({ value: s.value, text: s.text, score: Number(s.score.toFixed(3)), reasons: s.reasons }));
+            logger.info(`submitGeonetActivation: ap candidate scores top=${JSON.stringify(top)}`);
+
+            if (scores.length > 0) {
+              const first = scores[0];
+              const second = scores[1];
+              const diff = second ? first.score - second.score : first.score;
+              if (first.score >= 1.0 || (first.towerMatch && first.score >= 0.8)) {
+                apValue = first.value;
+                logger.info(`submitGeonetActivation: ap selected by token-heuristic -> value="${apValue}" text="${first.text}" score=${first.score.toFixed(3)} reasons=${JSON.stringify(first.reasons)}`);
+              } else if (second && diff < 0.05) {
+                logger.warn(`submitGeonetActivation: ambiguous ap match for "${apName}" top1 score=${first.score.toFixed(3)} top2 score=${second.score.toFixed(3)}; choosing top1 but logging candidates`);
+                apValue = first.value;
+                logger.info(`submitGeonetActivation: ambiguous top1 -> value="${apValue}" text="${first.text}" reasons=${JSON.stringify(first.reasons)}`);
+              } else if (first.score >= 0.4) {
+                apValue = first.value;
+                logger.info(`submitGeonetActivation: ap selected by weaker heuristic -> value="${apValue}" text="${first.text}" score=${first.score.toFixed(3)} reasons=${JSON.stringify(first.reasons)}`);
+              } else {
+                logger.warn(`submitGeonetActivation: apName provided but no strong token match found="${apName}"; falling back to selected value`);
+                apValue = this.getSelectedOptionValue(apSelect);
+                logger.info(`submitGeonetActivation: fallback ap value="${apValue}" text="${this.findOptionTextByValue(apSelect, apValue)}"`);
+              }
+            } else {
+              logger.warn(`submitGeonetActivation: no ap candidates available; falling back to selected value`);
+              apValue = this.getSelectedOptionValue(apSelect);
+            }
           }
         }
       } else {
