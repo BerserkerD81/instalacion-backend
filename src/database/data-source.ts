@@ -2,6 +2,7 @@ import { DataSource } from 'typeorm';
 import { InstallationRequest } from '../entities/InstallationRequest';
 import { Technician } from '../entities/Technician';
 import { Agenda } from '../entities/Agenda';
+import { SectorialNode } from '../entities/SectorialNode';
 import logger from '../utils/logger';
 
 const AppDataSource = new DataSource({
@@ -13,7 +14,7 @@ const AppDataSource = new DataSource({
   database: process.env.DB_NAME,
   synchronize: true,
   logging: false,
-  entities: [InstallationRequest, Technician, Agenda],
+  entities: [InstallationRequest, Technician, Agenda, SectorialNode],
   migrations: [],
   subscribers: [],
 });

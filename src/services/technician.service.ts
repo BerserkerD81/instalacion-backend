@@ -45,7 +45,9 @@ export class TechnicianService {
     const loginUrl = 'https://admin.geonet.cl/accounts/login/';
     await this.withRetry(
       () => client.get(loginUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Node.js Scraper)' } }),
-      'GET login'
+      'GET login',
+      6,
+      2000
     );
 
     const cookiesForHost = await jar.getCookies(loginUrl);
@@ -73,7 +75,9 @@ export class TechnicianService {
           maxRedirects: 0,
           validateStatus: (status) => status >= 200 && status < 400,
         }),
-      'POST login'
+      'POST login',
+      6,
+      2000
     );
 
     const postCookies = await jar.getCookies(loginUrl);

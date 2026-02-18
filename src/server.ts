@@ -1,9 +1,14 @@
+import 'dotenv/config'; // Asegura que esto esté arriba
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
 import routes from './routes';
 import errorHandler from './middlewares/errorHandler';
 import { appConfig } from './config';
 import { TechnicianService } from './services/technician.service';
+import { startGeonetImportScheduler } from './services/geonetImportScheduler';
+import { GeonetImportService } from './services/geonetImport.service';
 
 const app = express();
 const technicianService = new TechnicianService();
@@ -17,7 +22,6 @@ app.use(
         .map((s) => s.trim())
         .filter(Boolean);
 
-      // allow non-browser clients (curl, server-to-server)
       if (!origin) return callback(null, true);
       if (allowed.includes('*') || allowed.includes(origin)) return callback(null, true);
       return callback(new Error(`CORS blocked for origin: ${origin}`));
@@ -25,18 +29,16 @@ app.use(
     credentials: true,
   })
 );
-// Increase request body size limits to allow large form-data uploads (files)
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Routes
 app.use('/api', routes);
 app.use(routes);
 
-// Error handling middleware
 app.use(errorHandler);
 
-// Schedule technician sync: run once at startup and then daily
+// Sincronización diaria de técnicos
 async function runDailyTechSync() {
   try {
     await technicianService.syncFromWeb();
@@ -48,9 +50,26 @@ async function runDailyTechSync() {
 runDailyTechSync();
 setInterval(runDailyTechSync, 24 * 60 * 60 * 1000);
 
-// Start the server
-const PORT = appConfig.port || 3000;
+// --- CORRECCIÓN AQUÍ ---
 
+// 1. Iniciar Scheduler (Este se encargará de la importación remota inicial y las programadas)
+startGeonetImportScheduler();
+
+// 2. Importación SOLO si existe archivo LOCAL (Eliminamos la lógica remota de aquí para no duplicar)
+(async () => {
+  try {
+    const localCsv = 'Listado SectorialNodo - Geonet.csv';
+    const fullPath = path.join(process.cwd(), localCsv);
+    const geonet = new GeonetImportService();
+
+    // YA NO intentamos importar remotamente aquí, porque el Scheduler ya lo está haciendo.
+    
+  } catch (err) {
+    console.error('Error in startup local import:', String(err));
+  }
+})();
+
+const PORT = appConfig.port || 3000;
 const startServer = () => {
   app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);

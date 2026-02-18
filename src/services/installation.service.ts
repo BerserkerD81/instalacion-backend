@@ -382,6 +382,7 @@ export class InstallationService {
     zonaName?: string;
     routerName?: string;
     apName?: string;
+    comments?: string;
     agreedInstallationDate?: string | Date;
   }): Promise<{
     activationLink: string;
@@ -535,6 +536,7 @@ export class InstallationService {
         zonaName: params.zonaName,
         routerName: params.routerName,
         apName: params.apName,
+        comments: params.comments,
       });
 
       return { activationLink, technicianId, planId, firstAvailableIp, activationPostStatus };
@@ -2454,6 +2456,7 @@ private async submitGeonetActivation(params: {
     zonaName?: string;
     routerName?: string;
     apName?: string;
+  comments?: string;
   }): Promise<number> {
     const { client, activationLink, technicianId, planId, firstAvailableIp, installationRequestId, zonaName, routerName, apName } = params;
 
@@ -2515,19 +2518,16 @@ private async submitGeonetActivation(params: {
     const extractScopeLetters = (s: string): string[] => {
       const clean = s.toLowerCase();
       const letters: Set<string> = new Set();
-      // Rango "A-B"
       const rangeMatch = clean.match(/\b([a-d])\s*[-]\s*([a-d])\b/);
       if (rangeMatch) {
         const start = rangeMatch[1].charCodeAt(0);
         const end = rangeMatch[2].charCodeAt(0);
         for (let i = start; i <= end; i++) letters.add(String.fromCharCode(i));
       }
-      // "Torre A y B"
       const specificMatches = clean.matchAll(/(?:torre|block|edificio|sector)s?\s*([a-z](?:\s*y\s*[a-z])?)/g);
       for (const m of specificMatches) {
         if (m[1]) m[1].split(/\s*y\s*/).forEach(p => letters.add(p.trim()));
       }
-      // Fallback final string "Mirador A-B"
       if (!/\d/.test(clean)) {
          const endMatch = clean.match(/\b([a-z])[-]([a-z])\b/);
          if (endMatch) {
@@ -2539,14 +2539,19 @@ private async submitGeonetActivation(params: {
       return Array.from(letters);
     };
 
-    // --- HELPER: Similitud de Nombres (Jaccard) ---
-    const calculateNameSimilarity = (s1: string, s2: string): number => {
-        const t1 = new Set(s1.split(' ').filter(x => x.length > 2));
-        const t2 = new Set(s2.split(' ').filter(x => x.length > 2));
-        if (t1.size === 0 || t2.size === 0) return 0;
-        let intersection = 0;
-        t1.forEach(x => { if (t2.has(x)) intersection++; });
-        return intersection / (t1.size + t2.size - intersection); // Jaccard Index
+    // --- HELPER DE LIMPIEZA AGRESIVA ---
+    // Elimina TODO lo que no sea el nombre propio del lugar
+    const getStrictName = (s: string) => {
+        return s.toLowerCase()
+          // Eliminar identificadores técnicos
+          .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '') 
+          .replace(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/g, '')
+          .replace(/(?:torre|edificio|block|sector)\s*[-:._]?\s*([a-z0-9]+)/g, '')
+          // Eliminar palabras vacías
+          .replace(/\b(de|del|el|la|los|las|y|en|ii|iii|iv|v|ix)\b/g, '')
+          // Eliminar símbolos y espacios extra
+          .replace(/[-:._()]/g, ' ')
+          .replace(/\s+/g, ' ').trim();
     };
 
     // --- 1. RESOLVER ROUTER ---
@@ -2557,20 +2562,19 @@ private async submitGeonetActivation(params: {
       routerValue = this.getSelectedOptionValue(routerSelect);
     }
 
-    // --- 2. RESOLVER ZONA (Lógica A-B vs Torre A y B) ---
+    // --- 2. RESOLVER ZONA ---
     if (zonaSelect && zonaSelect.length > 0) {
       if (zonaName && String(zonaName).trim()) {
         const targetRaw = String(zonaName);
         const extractZoneId = (s: string) => s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
-        const getCleanZoneName = (s: string) => s.toLowerCase()
-            .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/g, '')
-            .replace(/[-:._()]/g, ' ').replace(/\s+/g, ' ').trim();
-
+        
         const targetId = extractZoneId(targetRaw);
-        const targetCleanName = getCleanZoneName(targetRaw);
+        const targetCleanName = getStrictName(targetRaw);
         const targetLetters = extractScopeLetters(targetRaw);
+        // Tokens clave del nombre (ej: ["mirador", "urbano"])
+        const targetTokens = targetCleanName.split(' ').filter(x => x.length > 2);
 
-        logger.info(`submitGeonetActivation: ZONA Target -> ID:${targetId} Letras:[${targetLetters}] Nombre:"${targetCleanName}"`);
+        logger.info(`submitGeonetActivation: ZONA Target -> ID:${targetId} Letras:[${targetLetters}] Tokens:[${targetTokens}]`);
 
         let bestZoneValue = '';
         let bestZoneScore = -1;
@@ -2583,23 +2587,31 @@ private async submitGeonetActivation(params: {
 
           const optId = extractZoneId(text);
           const optLetters = extractScopeLetters(text);
-          const optCleanName = getCleanZoneName(text);
+          const optCleanName = getStrictName(text);
 
-          // VETOS
+          // VETO 1: Si hay ID numérico y no coincide, CHAO.
           if (targetId && optId && targetId !== optId) return;
-          if (targetLetters.length > 0 && optLetters.length > 0) {
-             const hasIntersection = targetLetters.some(l => optLetters.includes(l));
-             if (!hasIntersection) return;
+
+          // VETO 2: Si el Target tiene nombre (Tokens) y la opción NO contiene NINGUNO, CHAO.
+          // (Prioridad absoluta al nombre si no hay ID)
+          if (!targetId && targetTokens.length > 0) {
+             const hasTokenMatch = targetTokens.some(t => optCleanName.includes(t));
+             if (!hasTokenMatch) return; // Descartado
           }
 
           let score = 0;
-          if (targetId && optId && targetId === optId) score += 60;
+          
+          // 1. Match de Nombre (Lo más valioso)
+          targetTokens.forEach(t => { if (optCleanName.includes(t)) score += 500; });
+
+          // 2. Match de ID
+          if (targetId && optId && targetId === optId) score += 1000;
+
+          // 3. Match de Letras (A-B vs A y B)
           if (targetLetters.length > 0 && optLetters.length > 0) {
              const overlap = targetLetters.filter(l => optLetters.includes(l)).length;
-             score += (overlap * 30);
+             score += (overlap * 50);
           }
-          const sim = calculateNameSimilarity(targetCleanName, optCleanName);
-          if (sim > 0.3) score += (sim * 40);
 
           if (score > bestZoneScore) {
             bestZoneScore = score;
@@ -2608,7 +2620,7 @@ private async submitGeonetActivation(params: {
           }
         });
 
-        if (bestZoneValue && bestZoneScore >= 30) {
+        if (bestZoneValue && bestZoneScore >= 100) {
           zonaValue = bestZoneValue;
           logger.info(`submitGeonetActivation: ZONA MATCH -> "${bestZoneText}" (Score: ${bestZoneScore})`);
         } else {
@@ -2622,11 +2634,12 @@ private async submitGeonetActivation(params: {
       zonaValue = '';
     }
 
-    // --- 3. RESOLVER AP (Corrección Crítica: Veto por Nombre) ---
+    // --- 3. RESOLVER AP (LÓGICA "EL NOMBRE ES EL REY") ---
     if (apSelect && apSelect.length > 0) {
       if (apName && String(apName).trim()) {
         const targetRaw = String(apName);
         
+        // Extracción de metadatos para desempate
         const extractMeta = (s: string) => {
            const zone = s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
            const cto = s.match(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/i)?.[1];
@@ -2634,21 +2647,11 @@ private async submitGeonetActivation(params: {
            return { zone, cto, tower };
         };
 
-        const getCleanLocationName = (s: string) => {
-          return s.toLowerCase()
-            .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '')
-            .replace(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/g, '')
-            .replace(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/g, '')
-            // Añadido: palabras genéricas que ensucian el nombre
-            .replace(/\b(de|del|el|la|los|las|y|en|ii|iii|iv|v|ix|edificio|condominio|residencial)\b/g, '') 
-            .replace(/[-:._()]/g, ' ')
-            .replace(/\s+/g, ' ').trim();
-        };
-
         const tMeta = extractMeta(targetRaw);
-        const tCleanName = getCleanLocationName(targetRaw);
+        const tCleanName = getStrictName(targetRaw); // Ej: "mirador urbano"
+        const tTokens = tCleanName.split(' ').filter(x => x.length > 2);
         
-        logger.info(`submitGeonetActivation: AP Target -> Meta:${JSON.stringify(tMeta)} NombreClean:"${tCleanName}"`);
+        logger.info(`submitGeonetActivation: AP Target -> Nombre:"${tCleanName}" Tokens:[${tTokens}] Meta:${JSON.stringify(tMeta)}`);
 
         let bestApValue = '';
         let bestApScore = -1;
@@ -2660,33 +2663,43 @@ private async submitGeonetActivation(params: {
           if (!value || text.includes('---------')) return;
 
           const oMeta = extractMeta(text);
-          const oCleanName = getCleanLocationName(text);
+          const oCleanName = getStrictName(text);
 
-          // VETOS DUROS (Metadata Explicita)
-          if (tMeta.zone && oMeta.zone && tMeta.zone !== oMeta.zone) return;
-          if (tMeta.cto && oMeta.cto && tMeta.cto !== oMeta.cto) return;
-          // Nota: Si busco Torre A y encuentro Torre B -> Veto. Pero cuidado con "Edificio Mirador" vs "Torre A".
-          if (tMeta.tower && oMeta.tower && tMeta.tower !== oMeta.tower) return;
-
-          // --- VETO CRÍTICO POR NOMBRE ---
-          // Si no tenemos match de ZONA (ID numérico), el nombre DEBE ser similar.
-          // Esto evita que "Mirador" haga match con "Puertas de Lircay" solo por la Torre/CTO.
-          const nameSim = calculateNameSimilarity(tCleanName, oCleanName);
-          const hasZoneMatch = tMeta.zone && oMeta.zone && tMeta.zone === oMeta.zone;
-
-          if (!hasZoneMatch) {
-             // Si no hay Zona confirmada, exigimos similitud de nombre.
-             // 0.2 significa que al menos ~20% de las palabras clave deben coincidir.
-             // "mirador urbano" (2) vs "puertas lircay" (2) -> 0% -> VETO.
-             if (tCleanName.length > 3 && oCleanName.length > 3 && nameSim < 0.2) return;
+          // --- FASE 1: EL FILTRO SUPREMO DEL NOMBRE ---
+          // Si el input tiene nombre ("mirador", "urbano"), la opción ESTÁ OBLIGADA a tenerlo.
+          // Si no lo tiene, se descarta INMEDIATAMENTE, sin importar si coincide CTO 1 o Torre A.
+          if (tTokens.length > 0) {
+             const matchesAllTokens = tTokens.every(token => oCleanName.includes(token));
+             // Relajamos un poco: debe coincidir al menos 1 token fuerte o todos si son pocos
+             const matchesSome = tTokens.some(token => oCleanName.includes(token));
+             
+             if (!matchesSome) return; // VETO ABSOLUTO: No se parece en nombre.
           }
 
+          // --- FASE 2: VETOS DE METADATA (Solo si pasó el nombre) ---
+          // Si ambos tienen Zona numérica y es distinta -> Chao
+          if (tMeta.zone && oMeta.zone && tMeta.zone !== oMeta.zone) return;
+          
+          // Si ambos tienen CTO numérico y es distinto -> Chao (Spliter 1 vs CTO 2)
+          if (tMeta.cto && oMeta.cto && tMeta.cto !== oMeta.cto) return;
+
+          // Si ambos tienen Torre y es distinta -> Chao (Torre A vs Torre B)
+          if (tMeta.tower && oMeta.tower && tMeta.tower !== oMeta.tower) return;
+
+
+          // --- FASE 3: PUNTAJE (Solo entre los finalistas) ---
           let score = 0;
-          score += (nameSim * 60); // Nombre pesa más que todo si no hay zona.
-          if (hasZoneMatch) score += 30;
-          if (tMeta.cto && oMeta.cto && tMeta.cto === oMeta.cto) score += 30;
-          if (tMeta.tower && oMeta.tower && tMeta.tower === oMeta.tower) score += 25;
-          if (tCleanName === oCleanName && tCleanName.length > 3) score += 40;
+
+          // El nombre ya pasó el filtro, así que damos puntos base
+          score += 1000; 
+
+          // Puntos extra por coincidencia EXACTA de tokens (Mirador + Urbano es mejor que solo Mirador)
+          tTokens.forEach(t => { if (oCleanName.includes(t)) score += 100; });
+
+          // Desempate por Metadatos
+          if (tMeta.tower && oMeta.tower && tMeta.tower === oMeta.tower) score += 500; // Coincidencia de Torre es el mejor desempate
+          if (tMeta.cto && oMeta.cto && tMeta.cto === oMeta.cto) score += 300;
+          if (tMeta.zone && oMeta.zone && tMeta.zone === oMeta.zone) score += 200;
 
           if (score > bestApScore) {
             bestApScore = score;
@@ -2695,11 +2708,12 @@ private async submitGeonetActivation(params: {
           }
         });
 
-        if (bestApValue && bestApScore >= 20) {
+        // Umbral alto porque garantizamos 1000 puntos si pasó el filtro de nombre
+        if (bestApValue && bestApScore >= 1000) {
           apValue = bestApValue;
           logger.info(`submitGeonetActivation: AP MATCH -> "${bestApText}" (Score: ${bestApScore})`);
         } else {
-          logger.warn(`submitGeonetActivation: Fallback AP Default`);
+          logger.warn(`submitGeonetActivation: No se encontró coincidencia de NOMBRE para "${apName}". Usando Default.`);
           apValue = this.getSelectedOptionValue(apSelect);
         }
       } else {
@@ -2739,7 +2753,8 @@ private async submitGeonetActivation(params: {
     form.append('cliente-fecha_instalacion', this.formatDateTimeCL(request.agreedInstallationDate));
     form.append('cliente-costo_instalacion', '0');
     form.append('cliente-creado_por', '');
-    form.append('cliente-comentarios', request.comments || '');
+    const commentsToSend = params.comments !== undefined && params.comments !== null ? String(params.comments) : (request.comments || '');
+    form.append('cliente-comentarios', commentsToSend);
     form.append('cliente-cliente_rb', externalIdBase);
     form.append('cliente-ip', firstAvailableIp);
     form.append('cliente-mac_cpe', '');

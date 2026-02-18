@@ -71,3 +71,39 @@ Las contribuciones son bienvenidas. Si deseas contribuir, por favor abre un issu
 ## Licencia
 
 Este proyecto está bajo la Licencia MIT. Consulta el archivo LICENSE para más detalles.
+
+## Geonet CSV import (production notes)
+
+ - Required environment variables: see `.env.example` for `GEONET_LOGIN_URL`, `GEONET_CSV_URL`, `GEONET_USER`, `GEONET_PASS`, and `GEONET_IMPORT_CRON`.
+ - The import scheduler runs once at startup and then on the `GEONET_IMPORT_CRON` schedule when those env vars are set.
+ - For production, set `NODE_ENV=production` and ensure migrations are run before starting the app.
+
+Recommended production steps:
+
+1. Create a `.env` from `.env.example` and fill in credentials.
+
+2. Run migrations (do not rely on `synchronize: true` in production):
+
+```bash
+npx typeorm-ts-node-esm migration:run
+```
+
+3. Build and start the app:
+
+```bash
+npm run build
+NODE_ENV=production npm run start
+```
+
+4. Monitor logs and ensure the cron job successfully downloads and imports the CSV. If you prefer manual control, you can set `GEONET_*` env vars only on the servers where you want the scheduler to run.
+
+Note: developer tooling vulnerabilities (previously from ESLint/ajv) are dev-only and do not affect runtime. This repository now uses Rome instead of ESLint for linting/formatting.
+
+Quick linting commands with Rome:
+
+```bash
+npx rome check
+npx rome format
+```
+
+If you still want to run ESLint locally, you may install it separately, but do not install devDependencies on production servers (see below).
