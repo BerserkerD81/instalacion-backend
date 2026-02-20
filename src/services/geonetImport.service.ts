@@ -1,12 +1,16 @@
 import AppDataSource, { initializeDataSource } from '../database/data-source';
 import { SectorialNode } from '../entities/SectorialNode';
-// import { Onu } from '../entities/Onu'; 
-import axios, { AxiosInstance } from 'axios';
-import { wrapper } from 'axios-cookiejar-support';
-import { CookieJar } from 'tough-cookie';
 import * as cheerio from 'cheerio';
 import logger from '../utils/logger';
 import { In, Not } from 'typeorm';
+import puppeteer, { Browser, Page } from 'puppeteer-core';
+
+// --- CONFIGURACIÓN PUPPETEER ---
+const BROWSER_WS = process.env.BROWSER_WS_ENDPOINT || 'ws://browser:3000';
+const GEONET_BASE_URL = 'https://admin.geonet.cl';
+
+let cachedCookies: any[] | null = null;
+let cookiesTimestamp: number = 0;
 
 type GeonetImportOptions = {
   loginUrl: string;
@@ -16,9 +20,7 @@ type GeonetImportOptions = {
   password: string;
 };
 
-// Helper para limpiar strings
 const clean = (val: any) => (val ? String(val).trim() : null);
-// Helper para limpiar números
 const cleanNum = (val: any) => {
   if (!val) return 0;
   const num = parseInt(String(val).replace(/\D/g, ''), 10);
@@ -26,93 +28,185 @@ const cleanNum = (val: any) => {
 };
 
 export class GeonetImportService {
-  private client: AxiosInstance;
-  private jar: CookieJar;
-
-  constructor() {
-    this.jar = new CookieJar();
-    this.client = wrapper(axios.create({
-      jar: this.jar,
-      withCredentials: true,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-      }
-    }));
-  }
+  constructor() {}
 
   private async ensureDataSource(): Promise<void> {
     if (!AppDataSource.isInitialized) await initializeDataSource();
   }
 
-  // Autenticación Robustecida
-  private async authenticate(loginUrl: string, user: string, pass: string): Promise<void> {
-    try {
-      logger.info(`Conectando a ${loginUrl} para obtener token CSRF...`);
-      const getResponse = await this.client.get(loginUrl);
-      
-      const $ = cheerio.load(getResponse.data);
-      const csrfToken = $('input[name="csrfmiddlewaretoken"]').val() as string;
+  // --- INFRAESTRUCTURA PUPPETEER (Copiada del servicio funcional) ---
 
-      if (!csrfToken) throw new Error('No se encontró csrfmiddlewaretoken en el login');
-
-      const params = new URLSearchParams();
-      params.append('csrfmiddlewaretoken', csrfToken);
-      params.append('login', user);       
-      params.append('password', pass);
-      params.append('next', '/panel/');   
-      params.append('remember', '1');     
-
-      logger.info('Enviando credenciales...');
-      const postResponse = await this.client.post(loginUrl, params.toString(), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Referer': loginUrl
-        },
-        maxRedirects: 5
-      });
-
-      if (postResponse.request.res.responseUrl.includes('login') && !postResponse.request.res.responseUrl.includes('panel')) {
-         if (String(postResponse.data).includes('Introzca un nombre de usuario y contraseña correctos')) {
-             throw new Error('Credenciales inválidas');
-         }
+  private async getBrowser(): Promise<Browser> {
+    if ((global as any).__sharedBrowser) {
+      try { return (global as any).__sharedBrowser as Browser; } catch {}
+    }
+    const MAX_ATTEMPTS = 3;
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const browser = await puppeteer.connect({
+          browserWSEndpoint: BROWSER_WS,
+          defaultViewport: { width: 1920, height: 1080 }
+        });
+        (browser as any).__realDisconnect = browser.disconnect.bind(browser);
+        browser.disconnect = async () => {}; // Reutilizar conexión
+        (global as any).__sharedBrowser = browser;
+        return browser;
+      } catch (err) {
+        lastErr = err;
+        await new Promise((res) => setTimeout(res, 1000 * attempt));
       }
-      logger.info('Login autenticado exitosamente.');
-    } catch (error: any) {
-      logger.error(`Fallo en autenticación: ${error.message}`);
-      throw error;
+    }
+    throw new Error(`No se pudo conectar a Browserless: ${lastErr?.message}`);
+  }
+
+  private async openPage(): Promise<{ browser: Browser; page: Page }> {
+    let browser = await this.getBrowser();
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(45000);
+
+      // Bloquear recursos innecesarios (modo invisible)
+      try {
+        await page.setRequestInterception(true);
+        const blockedResourceTypes = new Set(['image', 'stylesheet', 'font']);
+        const blockedUrlPatterns = [
+          'google-analytics', 'googletagmanager', 'doubleclick', 'analytics.js',
+          'gtag/js', 'adsystem.com', 'ads.google', 'facebook.net',
+          'connect.facebook.net', 'hotjar', 'mixpanel', 'matomo'
+        ];
+
+        page.on('request', (req) => {
+          try {
+            const url = req.url().toLowerCase();
+            const rType = req.resourceType();
+            if (blockedResourceTypes.has(rType)) return req.abort();
+            for (const p of blockedUrlPatterns) if (url.includes(p)) return req.abort();
+            return req.continue();
+          } catch (e) {
+            try { req.continue(); } catch (_) {}
+          }
+        });
+      } catch (e) {
+        // Ignorar si falla la intercepción
+      }
+
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+      
+      return { browser, page };
+    } catch (err) {
+      if ((global as any).__sharedBrowser) {
+        try { await ((global as any).__sharedBrowser as any).__realDisconnect(); } catch {}
+        (global as any).__sharedBrowser = null;
+      }
+      browser = await this.getBrowser();
+      const page = await browser.newPage();
+      return { browser, page };
     }
   }
 
+  private async ensureSession(page: Page, user: string, pass: string, opts?: { force?: boolean }): Promise<boolean> {
+    try {
+      const isCookieFresh = (Date.now() - cookiesTimestamp) < 1000 * 60 * 45; // 45 min
+      if (!opts?.force && cachedCookies && cachedCookies.length > 0 && isCookieFresh) {
+        await page.setCookie(...cachedCookies);
+        return true;
+      }
+
+      logger.info('Iniciando login vía Puppeteer...');
+      await page.goto(`${GEONET_BASE_URL}/accounts/login/`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.waitForSelector('input[name="login"]', { timeout: 10000 });
+
+      await page.click('input[name="login"]', { clickCount: 3 });
+      await page.type('input[name="login"]', user);
+      await page.click('input[name="password"]', { clickCount: 3 });
+      await page.type('input[name="password"]', pass);
+
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => null),
+        page.click('button[type="submit"]')
+      ]);
+
+if (!page.url().includes('/accounts/login/')) {
+        cachedCookies = await page.cookies();
+        cookiesTimestamp = Date.now();
+        logger.info('Login Puppeteer exitoso.');
+        return true;
+      }
+
+      // --- INICIO DE ZONA DE DEBUGGING ---
+      // 1. Extraemos los primeros 500 caracteres de texto de la página para ver si dice "Contraseña incorrecta" o "Cloudflare"
+      const textoVisible = await page.evaluate(() => {
+        return document.body.innerText.substring(0, 500).replace(/\n/g, ' ');
+      });
+      
+      logger.error(`Fallo el login, la URL sigue siendo: ${page.url()}`);
+      logger.error(`Texto visible en la pantalla del bot: ${textoVisible}`);
+
+      // 2. Opcional: Toma una captura de pantalla y la guarda dentro del contenedor Docker
+      const errorPath = `/tmp/geonet_login_failed_${Date.now()}.png`;
+      await page.screenshot({ path: errorPath, fullPage: true });
+      logger.info(`Captura de pantalla guardada en el contenedor en: ${errorPath}`);
+      // --- FIN DE ZONA DE DEBUGGING ---
+
+      return false;
+      logger.error('Fallo el login, URL no cambió.');
+      return false;
+    } catch (error) {
+      logger.error(`[Puppeteer] Fallo ensureSession: ${error}`);
+      return false;
+    }
+  }
+
+  private async safeGoto(page: Page, url: string, user: string, pass: string): Promise<string> {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    if (page.url().includes('/accounts/login/')) {
+      await this.ensureSession(page, user, pass, { force: true });
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+    }
+    // Devolvemos el HTML completo de la página
+    return await page.content();
+  }
+
+  // --- FLUJO PRINCIPAL ---
+
   public async importFromGeonet(opts: GeonetImportOptions): Promise<void> {
     await this.ensureDataSource();
+    const { browser, page } = await this.openPage();
 
     try {
-      await this.authenticate(opts.loginUrl, opts.username, opts.password);
+      // Garantizar la sesión antes de navegar
+      const loggedIn = await this.ensureSession(page, opts.username, opts.password);
+      if (!loggedIn) throw new Error('No se pudo iniciar sesión en Geonet');
 
       if (opts.dataPageUrl) {
-        await this.importSectorials(opts.dataPageUrl);
+        const html = await this.safeGoto(page, opts.dataPageUrl, opts.username, opts.password);
+        await this.importSectorials(html, opts.dataPageUrl);
       }
       
       if (opts.onuPageUrl) {
-        await this.importOnus(opts.onuPageUrl);
+        const html = await this.safeGoto(page, opts.onuPageUrl, opts.username, opts.password);
+        await this.importOnus(html, opts.onuPageUrl);
       }
 
     } catch (error: any) {
       logger.error(`Error crítico en importación: ${error.message}`);
+    } finally {
+      await page.close();
+      await browser.disconnect();
     }
   }
 
   /**
    * SECTORIALES: Sincronización Completa
+   * Nota: Ahora recibe el HTML directamente en lugar de hacer un GET con Axios
    */
-  private async importSectorials(url: string) {
-    logger.info(`Descargando tabla de Sectoriales: ${url}`);
-    const response = await this.client.get(url);
-    const records = this.parseHtmlTable(response.data);
+  private async importSectorials(html: string, url: string) {
+    logger.info(`Analizando HTML de Sectoriales desde: ${url}`);
+    const records = this.parseHtmlTable(html);
     
     if (records.length === 0) {
-        logger.warn('Tabla vacía. No se realizaron cambios en la BD.');
+        logger.warn('Tabla vacía o no detectada en el DOM. No se realizaron cambios en la BD.');
         return;
     }
 
@@ -124,8 +218,6 @@ export class GeonetImportService {
     for (const row of records) {
         const entity = new SectorialNode();
 
-        // --- MAPEO COMPLETO BASADO EN EL CSV ---
-        // Usamos una búsqueda flexible por si el HTML tiene espacios extra
         const getVal = (keyPart: string) => {
             const realKey = Object.keys(row).find(k => k.toLowerCase().includes(keyPart.toLowerCase()));
             return realKey ? row[realKey] : null;
@@ -136,8 +228,6 @@ export class GeonetImportService {
         entity.ip = clean(getVal('Ip'));
         entity.usuario = clean(getVal('Usuario'));
         entity.password = clean(getVal('Password'));
-        
-        // Aquí están los campos que faltaban:
         entity.zona = clean(getVal('Zona')); 
         entity.coordenadas = clean(getVal('Coordenadas')); 
         entity.totalClientes = cleanNum(getVal('Total de Clientes'));
@@ -146,10 +236,8 @@ export class GeonetImportService {
         entity.nodoTorre = clean(getVal('Nodo/Torre'));
         entity.comentarios = clean(getVal('Comentarios'));
         entity.accion = clean(getVal('Acción'));
-        
         entity.fallaGeneral = (getVal('Falla General') === 'Si' || getVal('Falla') === 'Si') ? 'Si' : 'No';
 
-        // Solo guardamos si tiene nombre válido
         if (entity.nombre) {
             processedNames.push(entity.nombre); 
 
@@ -164,7 +252,6 @@ export class GeonetImportService {
         }
     }
 
-    // --- LIMPIEZA: Borrar lo que ya no existe ---
     if (processedNames.length > 0) {
         const deleteResult = await repo.delete({
             nombre: Not(In(processedNames))
@@ -180,17 +267,15 @@ export class GeonetImportService {
   /**
    * ONUS: Simulación (Actualizar con tu entidad real)
    */
-  private async importOnus(url: string) {
-    logger.info(`Descargando tabla de ONUs: ${url}`);
+  private async importOnus(html: string, url: string) {
+    logger.info(`Analizando HTML de ONUs desde: ${url}`);
     try {
-        const response = await this.client.get(url);
-        const records = this.parseHtmlTable(response.data);
+        const records = this.parseHtmlTable(html);
 
         if (records.length === 0) return;
 
         let count = 0;
         for (const row of records) {
-            // Ejemplo de mapeo para ONUs
             const serial = row['Serial'] || row['MAC'] || row['Mac Address'];
             if (serial) {
                // logica de guardado...
@@ -209,12 +294,10 @@ export class GeonetImportService {
   private parseHtmlTable(html: string): any[] {
     const $ = cheerio.load(html);
     const records: any[] = [];
-    
     const headers: string[] = [];
     
-    // Extraer headers y limpiar espacios raros (&nbsp;)
     $('table thead tr th').each((i, el) => {
-      let text = $(el).text().replace(/\s+/g, ' ').trim(); // Normaliza espacios
+      let text = $(el).text().replace(/\s+/g, ' ').trim();
       if (!text) text = `col_${i}`;
       headers.push(text);
     });
@@ -224,11 +307,9 @@ export class GeonetImportService {
       $(row).find('td').each((j, cell) => {
         const header = headers[j];
         if (header && !header.startsWith('col_')) {
-            // Limpiar saltos de linea dentro de la celda
             record[header] = $(cell).text().replace(/\n/g, '').trim();
         }
       });
-      // Solo agregamos la fila si tiene datos
       if (Object.keys(record).length > 0) records.push(record);
     });
 

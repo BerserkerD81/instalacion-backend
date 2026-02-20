@@ -1,12 +1,15 @@
 import { Request, Response } from 'express';
 import { InstallationService } from '../services/installation.service';
+import { FileService } from '../services/file.service';
 import logger from '../utils/logger';
 
 export class InstallationController {
   private installationService: InstallationService;
+  private fileService: FileService;
 
   constructor() {
     this.installationService = new InstallationService();
+    this.fileService = new FileService();
   }
 
   public async createInstallationRequest(req: Request, res: Response): Promise<Response> {
@@ -29,13 +32,21 @@ export class InstallationController {
         }
       }
 
-      // Procesar archivos si existen
+      // Procesar archivos si existen: guardar buffers en disco y pasar filename
       if (req.files) {
         const files = req.files as any;
-        if (files.idFront) data.idFront = files.idFront[0].buffer;
-        if (files.idBack) data.idBack = files.idBack[0].buffer;
-        if (files.addressProof) data.addressProof = files.addressProof[0].buffer;
-        if (files.coupon) data.coupon = files.coupon[0].buffer;
+        if (files.idFront && files.idFront[0]) {
+          data.idFront = this.fileService.saveFile(files.idFront[0].buffer, files.idFront[0].originalname || 'idFront.jpg');
+        }
+        if (files.idBack && files.idBack[0]) {
+          data.idBack = this.fileService.saveFile(files.idBack[0].buffer, files.idBack[0].originalname || 'idBack.jpg');
+        }
+        if (files.addressProof && files.addressProof[0]) {
+          data.addressProof = this.fileService.saveFile(files.addressProof[0].buffer, files.addressProof[0].originalname || 'addressProof.jpg');
+        }
+        if (files.coupon && files.coupon[0]) {
+          data.coupon = this.fileService.saveFile(files.coupon[0].buffer, files.coupon[0].originalname || 'coupon.jpg');
+        }
       }
 
       const installationRequest = await this.installationService.createRequest(data);
