@@ -8,8 +8,6 @@ import errorHandler from './middlewares/errorHandler';
 import { appConfig } from './config';
 import { TechnicianService } from './services/technician.service';
 import { startGeonetImportScheduler } from './services/geonetImportScheduler';
-import { GeonetImportService } from './services/geonetImport.service';
-
 const app = express();
 const technicianService = new TechnicianService();
 
@@ -55,19 +53,6 @@ setInterval(runDailyTechSync, 24 * 60 * 60 * 1000);
 // 1. Iniciar Scheduler (Este se encargará de la importación remota inicial y las programadas)
 startGeonetImportScheduler();
 
-// 2. Importación SOLO si existe archivo LOCAL (Eliminamos la lógica remota de aquí para no duplicar)
-(async () => {
-  try {
-    const localCsv = 'Listado SectorialNodo - Geonet.csv';
-    const fullPath = path.join(process.cwd(), localCsv);
-    const geonet = new GeonetImportService();
-
-    // YA NO intentamos importar remotamente aquí, porque el Scheduler ya lo está haciendo.
-    
-  } catch (err) {
-    console.error('Error in startup local import:', String(err));
-  }
-})();
 
 const PORT = appConfig.port || 3000;
 const startServer = () => {

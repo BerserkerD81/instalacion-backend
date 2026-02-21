@@ -34,137 +34,210 @@ export class GeonetImportService {
     if (!AppDataSource.isInitialized) await initializeDataSource();
   }
 
-  // --- INFRAESTRUCTURA PUPPETEER (Copiada del servicio funcional) ---
+  // =========================================================================
+  // INFRAESTRUCTURA PUPPETEER (Optimizado y Tolerante a Fallos)
+  // =========================================================================
 
   private async getBrowser(): Promise<Browser> {
+    // Reutilizar conexión activa
     if ((global as any).__sharedBrowser) {
       try { return (global as any).__sharedBrowser as Browser; } catch {}
     }
+
     const MAX_ATTEMPTS = 3;
     let lastErr: any = null;
+    
+    // Inyectamos stealth=true y timeout=120000 para evitar que Browserless corte la conexión prematuramente
+    const timeout = 120000;
+    const wsUrl = `${BROWSER_WS}${BROWSER_WS.includes('?') ? '&' : '?'}stealth=true&timeout=${timeout}`;
+
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
+        logger.info(`[Puppeteer Import] Conectando a ${wsUrl} (intento ${attempt})...`);
         const browser = await puppeteer.connect({
-          browserWSEndpoint: BROWSER_WS,
+          browserWSEndpoint: wsUrl,
           defaultViewport: { width: 1920, height: 1080 }
         });
-        (browser as any).__realDisconnect = browser.disconnect.bind(browser);
-        browser.disconnect = async () => {}; // Reutilizar conexión
+
+        // Guardar el disconnect real y reemplazar por noop para reutilización
+        (browser as any).__realDisconnect = (browser as any).disconnect?.bind(browser) || null;
+        (browser as any).disconnect = async () => { /* noop: conexión compartida */ };
+
         (global as any).__sharedBrowser = browser;
         return browser;
-      } catch (err) {
+      } catch (err: any) {
         lastErr = err;
+        logger.warn(`[Puppeteer Import] Error conectando a browserless: ${err.message || err}. Reintentando...`);
         await new Promise((res) => setTimeout(res, 1000 * attempt));
       }
     }
-    throw new Error(`No se pudo conectar a Browserless: ${lastErr?.message}`);
+    throw new Error(`No se pudo conectar a Browserless: ${lastErr?.message || lastErr}`);
   }
 
-  private async openPage(): Promise<{ browser: Browser; page: Page }> {
+  public async shutdownBrowser(): Promise<void> {
+    const shared = (global as any).__sharedBrowser as Browser | undefined;
+    if (!shared) return;
+    const real = (shared as any).__realDisconnect;
+    try {
+      if (real) await real();
+    } catch (e: any) {
+      logger.warn('[Puppeteer Import] Error cerrando browser:', e?.message || e);
+    }
+    (global as any).__sharedBrowser = null;
+  }
+
+private async openPage(): Promise<{ browser: Browser; page: Page }> {
     let browser = await this.getBrowser();
     try {
       const page = await browser.newPage();
-      page.setDefaultNavigationTimeout(45000);
-
-      // Bloquear recursos innecesarios (modo invisible)
-      try {
-        await page.setRequestInterception(true);
-        const blockedResourceTypes = new Set(['image', 'stylesheet', 'font']);
-        const blockedUrlPatterns = [
-          'google-analytics', 'googletagmanager', 'doubleclick', 'analytics.js',
-          'gtag/js', 'adsystem.com', 'ads.google', 'facebook.net',
-          'connect.facebook.net', 'hotjar', 'mixpanel', 'matomo'
-        ];
-
-        page.on('request', (req) => {
-          try {
-            const url = req.url().toLowerCase();
-            const rType = req.resourceType();
-            if (blockedResourceTypes.has(rType)) return req.abort();
-            for (const p of blockedUrlPatterns) if (url.includes(p)) return req.abort();
-            return req.continue();
-          } catch (e) {
-            try { req.continue(); } catch (_) {}
-          }
-        });
-      } catch (e) {
-        // Ignorar si falla la intercepción
-      }
-
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
       
+      page.setDefaultNavigationTimeout(60000); 
+
+      // IMPORTANTE: Hemos eliminado page.setRequestInterception. 
+      // Cloudflare detecta si no descargas el CSS o las imágenes.
+
+      // Falsificamos un agente de usuario normal y cabeceras humanas
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'es-CL,es-419;q=0.9,es;q=0.8,en;q=0.7',
+        'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Upgrade-Insecure-Requests': '1'
+      });
+
       return { browser, page };
-    } catch (err) {
-      if ((global as any).__sharedBrowser) {
-        try { await ((global as any).__sharedBrowser as any).__realDisconnect(); } catch {}
-        (global as any).__sharedBrowser = null;
-      }
+    } catch (err: any) {
+      logger.warn('[Puppeteer Import] newPage falló, intentando reconectar...', err?.message || err);
+      try { await this.shutdownBrowser(); } catch (e) {}
       browser = await this.getBrowser();
       const page = await browser.newPage();
       return { browser, page };
     }
   }
 
-  private async ensureSession(page: Page, user: string, pass: string, opts?: { force?: boolean }): Promise<boolean> {
+private async ensureSession(page: Page, opts?: { force?: boolean }): Promise<boolean> {
+    const start = Date.now();
     try {
-      const isCookieFresh = (Date.now() - cookiesTimestamp) < 1000 * 60 * 45; // 45 min
+      if (page.isClosed()) return false;
+
+      const isCookieFresh = (Date.now() - cookiesTimestamp) < 1000 * 60 * 45; 
       if (!opts?.force && cachedCookies && cachedCookies.length > 0 && isCookieFresh) {
         await page.setCookie(...cachedCookies);
         return true;
       }
 
-      logger.info('Iniciando login vía Puppeteer...');
-      await page.goto(`${GEONET_BASE_URL}/accounts/login/`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      await page.waitForSelector('input[name="login"]', { timeout: 10000 });
+      logger.info('Iniciando login vía Puppeteer Import (Navegando a Geonet)...');
+      
+      // 1. Navegación inicial y captura del código de estado HTTP
+      const response = await page.goto(`${GEONET_BASE_URL}/accounts/login/`, { 
+        waitUntil: 'networkidle2', 
+        timeout: 90000 
+      });
+
+      if (response) {
+        const status = response.status();
+        logger.info(`[Puppeteer Import] Status HTTP inicial: ${status}`);
+        if (status === 429) {
+          logger.error('⚠️ ALERTA CLOUDFLARE: Status 429 (Too Many Requests). La IP está bloqueada temporalmente por Geonet.');
+        } else if (status === 403) {
+          logger.error('⚠️ ALERTA CLOUDFLARE: Status 403 (Forbidden). Cloudflare bloqueó el acceso directamente.');
+        }
+      }
+
+      // 2. Lógica de Evasión de Cloudflare
+      const isCloudflare = await page.evaluate(() => {
+        const text = document.body.innerText.toLowerCase();
+        return text.includes('just a moment') || 
+               text.includes('verifying') || 
+               !!document.querySelector('#cf-challenge') ||
+               window.location.href.includes('__cf_chl_rt_tk');
+      });
+
+      if (isCloudflare) {
+        logger.warn('⚠️ Cloudflare Challenge detectado. Iniciando contramedidas...');
+        
+        try {
+          await page.mouse.move(100, 100);
+          await page.mouse.move(200, 200, { steps: 10 });
+          await page.mouse.move(150, 300, { steps: 20 });
+        } catch (e) {}
+
+        try {
+          await page.waitForFunction(() => {
+            return !document.body.innerText.toLowerCase().includes('verifying') &&
+                   !!document.querySelector('input[name="login"]');
+          }, { timeout: 30000 });
+          logger.info('✅ Reto de Cloudflare superado (Login visible).');
+        } catch (e) {
+          // LOG EXPLÍCITO DE LO QUE ESTÁ EN PANTALLA SI FALLA EL RETO
+          const htmlDump = await page.evaluate(() => document.body.innerText.substring(0, 400).replace(/\n/g, ' | '));
+          logger.error(`❌ Fallo al superar Cloudflare. Texto en pantalla: [${htmlDump}]`);
+        }
+      }
+
+      // 3. Login Real con Log Explícito
+      try {
+        await page.waitForSelector('input[name="login"]', { timeout: 15000 });
+      } catch (error) {
+        // AQUÍ LOGUEAMOS QUÉ PASÓ REALMENTE SI NO APARECE EL LOGIN
+        const currentUrl = page.url();
+        const pageTitle = await page.title();
+        const bodyText = await page.evaluate(() => document.body.innerText.substring(0, 400).replace(/\n/g, ' | '));
+        
+        logger.error(`[Puppeteer Import] Fallo crítico: No se encontró el formulario de login.`);
+        logger.error(`--> 🕵️ URL Final: ${currentUrl}`);
+        logger.error(`--> 🕵️ Título de Pestaña: ${pageTitle}`);
+        logger.error(`--> 🕵️ Texto Visible: ${bodyText}`);
+        
+        return false;
+      }
+
+      const username = process.env.GEONET_USER || process.env.ADMIN_LOGIN || 'Jorgeprac@geonet';
+      const password = process.env.GEONET_PASS || process.env.ADMIN_PASSWORD || 'JorgePrac';
 
       await page.click('input[name="login"]', { clickCount: 3 });
-      await page.type('input[name="login"]', user);
+      await page.type('input[name="login"]', username, { delay: 75 }); 
+      
       await page.click('input[name="password"]', { clickCount: 3 });
-      await page.type('input[name="password"]', pass);
+      await page.type('input[name="password"]', password, { delay: 75 });
 
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => null),
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => null),
         page.click('button[type="submit"]')
       ]);
 
-if (!page.url().includes('/accounts/login/')) {
+      const finalUrl = page.url();
+      if (!finalUrl.includes('/accounts/login/') && !finalUrl.includes('__cf_chl_rt_tk')) {
         cachedCookies = await page.cookies();
         cookiesTimestamp = Date.now();
-        logger.info('Login Puppeteer exitoso.');
+        logger.info(`✅ Login GeonetImportService exitoso. T: ${Date.now() - start}ms`);
         return true;
       }
-
-      // --- INICIO DE ZONA DE DEBUGGING ---
-      // 1. Extraemos los primeros 500 caracteres de texto de la página para ver si dice "Contraseña incorrecta" o "Cloudflare"
-      const textoVisible = await page.evaluate(() => {
-        return document.body.innerText.substring(0, 500).replace(/\n/g, ' ');
-      });
       
-      logger.error(`Fallo el login, la URL sigue siendo: ${page.url()}`);
-      logger.error(`Texto visible en la pantalla del bot: ${textoVisible}`);
-
-      // 2. Opcional: Toma una captura de pantalla y la guarda dentro del contenedor Docker
-      const errorPath = `/tmp/geonet_login_failed_${Date.now()}.png`;
-      await page.screenshot({ path: errorPath, fullPage: true });
-      logger.info(`Captura de pantalla guardada en el contenedor en: ${errorPath}`);
-      // --- FIN DE ZONA DE DEBUGGING ---
-
+      logger.error(`Fallo login import. URL atrapada: ${finalUrl}`);
       return false;
-      logger.error('Fallo el login, URL no cambió.');
-      return false;
-    } catch (error) {
-      logger.error(`[Puppeteer] Fallo ensureSession: ${error}`);
+    } catch (error: any) {
+      logger.error(`[Puppeteer Import] Error fatal en login: ${error.message}`);
       return false;
     }
   }
 
-  private async safeGoto(page: Page, url: string, user: string, pass: string): Promise<string> {
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+  private async safeGoto(page: Page, url: string, opts?: { waitForSelector?: string; timeout?: number }): Promise<string> {
+    const timeout = opts?.timeout ?? 45000;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+    
+    // Si al intentar ir a la URL nos patea al login, renovamos sesión
     if (page.url().includes('/accounts/login/')) {
-      await this.ensureSession(page, user, pass, { force: true });
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      const loggedIn = await this.ensureSession(page, { force: true });
+      if (!loggedIn) throw new Error('Sesión expirada y no se pudo re-autenticar');
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
     }
-    // Devolvemos el HTML completo de la página
+    
+    if (opts?.waitForSelector) {
+      await page.waitForSelector(opts.waitForSelector, { timeout: 15000 }).catch(() => null);
+    }
+    
     return await page.content();
   }
 
@@ -175,17 +248,17 @@ if (!page.url().includes('/accounts/login/')) {
     const { browser, page } = await this.openPage();
 
     try {
-      // Garantizar la sesión antes de navegar
-      const loggedIn = await this.ensureSession(page, opts.username, opts.password);
+      // Llamada corregida: solo pasamos la página (ensureSession usará las env vars)
+      const loggedIn = await this.ensureSession(page);
       if (!loggedIn) throw new Error('No se pudo iniciar sesión en Geonet');
 
       if (opts.dataPageUrl) {
-        const html = await this.safeGoto(page, opts.dataPageUrl, opts.username, opts.password);
+        const html = await this.safeGoto(page, opts.dataPageUrl);
         await this.importSectorials(html, opts.dataPageUrl);
       }
       
       if (opts.onuPageUrl) {
-        const html = await this.safeGoto(page, opts.onuPageUrl, opts.username, opts.password);
+        const html = await this.safeGoto(page, opts.onuPageUrl);
         await this.importOnus(html, opts.onuPageUrl);
       }
 
@@ -193,13 +266,12 @@ if (!page.url().includes('/accounts/login/')) {
       logger.error(`Error crítico en importación: ${error.message}`);
     } finally {
       await page.close();
-      await browser.disconnect();
+      // NO Hacemos await browser.disconnect() para aprovechar el Singleton.
     }
   }
 
   /**
    * SECTORIALES: Sincronización Completa
-   * Nota: Ahora recibe el HTML directamente en lugar de hacer un GET con Axios
    */
   private async importSectorials(html: string, url: string) {
     logger.info(`Analizando HTML de Sectoriales desde: ${url}`);

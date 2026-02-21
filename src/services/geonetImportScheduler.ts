@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { GeonetImportService } from './geonetImport.service'; // Asegúrate que esta ruta sea correcta
+import { GeonetImportService } from './installation.service'; // Asegúrate que esta ruta sea correcta
 import logger from '../utils/logger';
 
 export function startGeonetImportScheduler() {
