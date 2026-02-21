@@ -7,10 +7,16 @@ services:
     # SEGURIDAD: Solo accesible desde el propio servidor (localhost)
     env_file:
       - .env
+    environment:
+      # Aseguramos que la API sepa dónde está Browserless
+      - BROWSER_WS_ENDPOINT=ws://browser:3000
     volumes:
       - uploads_data:/usr/src/app/uploads
     depends_on:
-      - mysql
+      mysql:
+        condition: service_started
+      browser:
+        condition: service_healthy # Espera a que Chrome esté listo antes de arrancar la API
     networks:
       - instalaciones_network
 
@@ -43,6 +49,32 @@ services:
     networks:
       - instalaciones_network
 
+  # --- NUEVO SERVICIO BROWSERLESS ---
+  browser:
+    image: browserless/chrome:latest
+    container_name: browserless
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      # Aumentamos a 2 minutos para que Puppeteer tenga tiempo de pasar el captcha
+      - CONNECTION_TIMEOUT=120000
+      - MAX_CONCURRENT_SESSIONS=10
+      - DEFAULT_STEALTH=true
+      - DEFAULT_IGNORE_HTTPS_ERRORS=true
+      # SOLUCIÓN AL CRASH: Formato JSON estricto encerrado en comillas simples
+# ESTO ESTÁ BIEN:
+      - DEFAULT_LAUNCH_ARGS=["--disable-blink-features=AutomationControlled","--no-sandbox","--disable-setuid-sandbox"]    # Vital para que Cloudflare no colapse el contenedor por falta de memoria RAM
+    shm_size: '1gb'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - instalaciones_network
+  # ----------------------------------
+  
   phpmyadmin:
     image: phpmyadmin/phpmyadmin:latest
     container_name: phpmyadmin
