@@ -434,17 +434,20 @@ export class GeonetBaseService {
     try {
       if (page.isClosed()) return false;
 
-      const isCookieFresh = (Date.now() - cookiesTimestamp) < 1000 * 60 * 45; // 45 min
+      // OPTIMIZACIÓN: Ampliamos la duración de la caché a 12 HORAS (1000 * 60 * 60 * 12)
+      // Como safeGoto intercepta las redirecciones al login, es seguro asumir que la cookie vive mucho.
+      const isCookieFresh = (Date.now() - cookiesTimestamp) < 1000 * 60 * 60 * 12;
       if (!opts?.force && cachedCookies && cachedCookies.length > 0 && isCookieFresh) {
         await page.setCookie(...cachedCookies);
         return true;
       }
 
-      logger.info('[GeonetBase] Cookies no válidas o expiradas. Iniciando Login...');
+      logger.info('[GeonetBase] Cookies no válidas o expiradas. Iniciando Login (Rápido)...');
 
+      // OPTIMIZACIÓN: domcontentloaded es más rápido que networkidle2
       const response = await page.goto(`${GEONET_BASE_URL}/accounts/login/`, {
-        waitUntil: 'networkidle2',
-        timeout: 90000
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
       });
 
       if (response) {
@@ -494,20 +497,17 @@ export class GeonetBaseService {
       const username = process.env.GEONET_USER || process.env.ADMIN_LOGIN || 'Jorgeprac@geonet';
       const password = process.env.GEONET_PASS || process.env.ADMIN_PASSWORD || 'JorgePrac';
 
-      await page.click('input[name="login"]', { clickCount: 3 });
-      await page.type('input[name="login"]', username, { delay: 75 });
-      await page.click('input[name="password"]', { clickCount: 3 });
-      await page.type('input[name="password"]', password, { delay: 75 });
+      // OPTIMIZACIÓN: Tecleo rápido, sin delays artificiales
+      await page.type('input[name="login"]', username);
+      await page.type('input[name="password"]', password);
 
-      // 1. Usar domcontentloaded es mejor para formularios
+      // OPTIMIZACIÓN: Usar domcontentloaded es mejor para avanzar rápido
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
         page.click('button[type="submit"]')
       ]);
 
-      // 2. Pequeña pausa para asegurar que Django renderizó el error si lo hay
-      await new Promise(res => setTimeout(res, 2000));
-
+      // Comprobamos el URL inmediatamente sin sleep fijo
       const finalUrl = page.url();
       if (!finalUrl.includes('/accounts/login/') && !finalUrl.includes('__cf_chl_rt_tk')) {
         cachedCookies = await page.cookies();
@@ -516,9 +516,7 @@ export class GeonetBaseService {
         return true;
       }
 
-      // 3. CAPTURAR EL ERROR EXACTO DE LA PANTALLA
       const errorMsg = await page.evaluate(() => {
-        // Busca las clases típicas de error en Django/Geonet
         const alert = document.querySelector('.alert, .errorlist, .text-danger, .help-block');
         return alert ? alert.textContent?.trim() : 'Ningún mensaje de error visible';
       });
@@ -533,6 +531,7 @@ export class GeonetBaseService {
 
   protected async safeGoto(page: Page, url: string, opts?: { waitForSelector?: string; timeout?: number }): Promise<any> {
     const timeout = opts?.timeout ?? 45000;
+    // OPTIMIZACIÓN: Usamos domcontentloaded para que sea más veloz
     let response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
 
     if (page.url().includes('/accounts/login/')) {
@@ -712,7 +711,7 @@ export class InstallationService extends GeonetBaseService {
     }, selector);
   }
 
-public async lookupPreinstallationActivation(params: {
+  public async lookupPreinstallationActivation(params: {
     clientName: string;
     client_ci?: string;
     technicianName: string;
@@ -838,7 +837,6 @@ public async lookupPreinstallationActivation(params: {
     if (!cleanCi) return undefined;
 
     // Comparamos normalizando la columna de la BD a minúsculas y sin puntos/guiones
-    // Usamos igualdad estricta para evitar falsos positivos
     const matches = await repo.createQueryBuilder('r')
       .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) = :ci', { ci: `${cleanCi}` })
       .getMany();
@@ -858,7 +856,7 @@ public async lookupPreinstallationActivation(params: {
     return undefined;
   }
 
-private async submitGeonetActivation(params: {
+  private async submitGeonetActivation(params: {
     page: Page;
     activationLink: string;
     technicianId: string;
@@ -976,7 +974,7 @@ private async submitGeonetActivation(params: {
     }
 
     // ==============================================================================
-    // NUEVO: INTERACCIÓN EN LA UI PARA REFRESCAR LA LISTA DE IPs
+    // INTERACCIÓN EN LA UI PARA REFRESCAR LA LISTA DE IPs (OPTIMIZADO)
     // ==============================================================================
     logger.info(`[Puppeteer] Seleccionando Zona ID: ${zonaValue} y Router ID: ${routerValue} para refrescar IP...`);
     
@@ -985,7 +983,6 @@ private async submitGeonetActivation(params: {
         const el = document.querySelector(selector) as HTMLSelectElement;
         if (el && val) {
           el.value = val;
-          // Si Geonet usa jQuery (ej. para Select2), lo disparamos nativo para jQuery también
           if (typeof (window as any).jQuery !== 'undefined') {
             (window as any).jQuery(el).trigger('change');
           } else {
@@ -999,8 +996,16 @@ private async submitGeonetActivation(params: {
       triggerChange('select[name*="ap_cliente" i]', aVal);
     }, routerValue, zonaValue, apValue);
 
-    // Damos un tiempo razonable para que el AJAX de Geonet vaya al backend y traiga las IPs de esa zona
-    await new Promise(r => setTimeout(r, 2500)); 
+    // OPTIMIZACIÓN: Espera dinámica a que la IP aparezca en el DOM
+    await page.waitForFunction(() => {
+      const popoverNode = document.querySelector('#popover-ips-disponibles ul li a');
+      if (popoverNode && popoverNode.textContent && /\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(popoverNode.textContent)) return true;
+      
+      const ipInput = document.querySelector('input[name*="ip" i]') as HTMLInputElement;
+      if (ipInput && ipInput.value && /\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(ipInput.value)) return true;
+      
+      return false;
+    }, { timeout: 4000 }).catch(() => null); 
 
     // Extraemos la nueva IP actualizada
     const finalIp = await page.evaluate(() => {
@@ -1076,7 +1081,7 @@ private async submitGeonetActivation(params: {
         'cliente-costo_instalacion': '0',
         'cliente-comentarios': commentsToSend,
         'cliente-cliente_rb': externalIdBase,
-        'cliente-ip': finalIp, // Usamos la nueva IP extraída
+        'cliente-ip': finalIp,
         'cliente-router_cliente': routerValue,
         'cliente-zona_cliente': zonaValue,
         'cliente-plan_internet': planId,
@@ -1108,49 +1113,38 @@ private async submitGeonetActivation(params: {
     const { browser, page } = await this.openPage();
 
     try {
-      // 1. Validar la sesión
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
       const ticketUrl = `${GEONET_BASE_URL}/tickets/agregar/${params.ticketCategoryId}/`;
       logger.info(`[Puppeteer] Creando ticket en: ${ticketUrl}`);
 
-      // 2. Ir a la URL del formulario y esperar que renderice
       await this.safeGoto(page, ticketUrl, { waitForSelector: 'form#agregar-ticket' });
 
-      // Normalizar nombres de variables (Soporta camelCase de la interfaz y snake_case de n8n)
       const effectiveInicio = params.fecha_inicio || params.fechaInicio;
       const effectiveFinal = params.fecha_final || params.fechaFinal;
       const effectiveTecnicoId = params.tecnicoId || (params as any).tecnico;
 
-      // 3. Llenar campos Select y de texto estándar
-
-      // ASUNTO
       const asuntoDefaultStr = params.asuntosDefault || (params as any).asuntos_default || 'Instalación';
       await page.select('#id_asuntos_default', asuntoDefaultStr);
 
-      // Manejar el caso donde el select despliega un input adicional
       if (asuntoDefaultStr === 'Otro Asunto' && params.asunto) {
         await page.waitForSelector('#id_asunto', { visible: true });
         await page.type('#id_asunto', params.asunto);
       }
 
-      // TÉCNICO
       if (effectiveTecnicoId) {
         await page.select('#id_tecnico', String(effectiveTecnicoId));
       }
 
-      // DEPARTAMENTO (Solo interactuamos con el select visible, la página llena el oculto sola)
       const departamentoSelectStr = params.departamentosDefault || (params as any).departamentos_default || 'Otro';
       await page.select('#id_departamentos_default', departamentoSelectStr);
 
-      // ORIGEN, ESTADO Y PRIORIDAD
       const origenStr = params.origenReporte || (params as any).origen_reporte || 'oficina';
       await page.select('#id_origen_reporte', origenStr);
 
       if (params.estado) await page.select('#id_estado', String(params.estado));
       if (params.prioridad) await page.select('#id_prioridad', String(params.prioridad));
 
-      // 4. Llenar fechas (inyectando el valor directamente para evadir bloqueos del datepicker)
       if (effectiveInicio) {
         await page.evaluate((val) => {
           (document.querySelector('#id_fecha_inicio') as HTMLInputElement).value = val;
@@ -1162,39 +1156,31 @@ private async submitGeonetActivation(params: {
         }, effectiveFinal);
       }
 
-      // 5. Inyectar contenido en CKEditor (El editor de texto enriquecido)
       const descripcion = params.descripcion || 'Ticket automático vía Bot';
       await page.evaluate((texto) => {
-        // Interaccionar directamente con la API global de CKEditor
         if ((window as any).CKEDITOR && (window as any).CKEDITOR.instances.id_descripcion) {
           (window as any).CKEDITOR.instances.id_descripcion.setData(texto);
         } else {
-          // Fallback por si CKEditor fallara en cargar
           (document.querySelector('#id_descripcion') as HTMLTextAreaElement).value = texto;
         }
       }, descripcion);
 
-      // 6. Hacer clic en Guardar y esperar a que el backend nos redirija
+      // OPTIMIZACIÓN: domcontentloaded es mucho más rápido que networkidle0
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle0' }),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
         page.click('button[type="submit"].btn-primary')
       ]);
 
-      // 7. Comprobar éxito
       const finalUrl = page.url();
-      // Si el form fue exitoso, Django hace un redirect (HTTP 302) y salimos de la URL de "/agregar/"
       const isSuccess = !finalUrl.includes('/agregar/');
 
       logger.info(`[Puppeteer] Ticket creado, isSuccess: ${isSuccess}, URL final: ${finalUrl}, t: ${Date.now() - start}ms`);
-
-      // Devolvemos status 200 en caso de éxito, 400 si se quedó atascado en el formulario
       return { status: isSuccess ? 200 : 400, location: finalUrl };
 
     } catch (error: any) {
       logger.error(`Error en crearTicket: ${error.message}`);
       throw error;
     } finally {
-      // Siempre cerrar la página para liberar RAM del contenedor de Browserless
       await page.close();
     }
   }
@@ -1215,7 +1201,7 @@ private async submitGeonetActivation(params: {
     }
   }
 
-public async editarInstalacionGeonet(params: { externalIdOrUser: string; installationId: string | number; updates: Record<string, any>; }): Promise<any> {
+  public async editarInstalacionGeonet(params: { externalIdOrUser: string; installationId: string | number; updates: Record<string, any>; }): Promise<any> {
     const { externalIdOrUser, installationId, updates } = params;
     if (!externalIdOrUser || !installationId) throw Object.assign(new Error('externalIdOrUser e installationId son requeridos'), { statusCode: 400 });
 
@@ -1224,12 +1210,10 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
       const url = `${GEONET_BASE_URL}/Instalaciones/editar/${encodeURIComponent(externalIdOrUser)}/${encodeURIComponent(installationId)}/`;
-      // Esperamos directamente por el formulario que muestra el HTML de Geonet
       await this.safeGoto(page, url, { waitForSelector: 'form#agregar-cliente' });
 
       const resolvedUpdates: Record<string, string> = {};
       
-      // 1. Ampliamos el mapeo estricto para atrapar los campos enviados desde n8n
       const fieldMap: Record<string, string> = {
         firstName: 'usr-first_name',
         lastName: 'usr-last_name',
@@ -1246,25 +1230,19 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         externalId: 'perfil-external_id',
         costo: 'cliente-costo_instalacion',
         clienteRb: 'cliente-cliente_rb',
-        // Mapeo de Fechas (Soporta múltiples variables desde n8n):
         fechaInstalacion: 'cliente-fecha_instalacion',
         fecha_instalacion: 'cliente-fecha_instalacion',
         agreedInstallationDate: 'cliente-fecha_instalacion',
       };
 
-      // Mapeamos los campos de texto plano (excluyendo los que necesitan IDs como selects)
       const specialKeys = ['routerName', 'zonaName', 'apName', 'planName', 'technicianName', 'tecnico', 'tecnicoName', 'comments', 'comentarios'];
       for (const [key, value] of Object.entries(updates)) {
         if (value === undefined || value === null) continue;
         if (specialKeys.includes(key)) continue;
-
         const formKey = fieldMap[key] || key;
         resolvedUpdates[formKey] = String(value);
       }
 
-      // 2. Resolución de Selectores (Texto legible -> Value/ID del HTML)
-      
-      // Capturamos el técnico sin importar cómo lo envíe n8n
       const techInput = updates.technicianName || updates.tecnico || updates.tecnicoName;
       if (techInput) {
         const opts = await this.extractSelectOptions(page, '#id_cliente-tecnico');
@@ -1304,7 +1282,6 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
 
       const newComments = updates.comments || updates.comentarios;
 
-      // 3. Ejecutar actualización de FormData dentro de Puppeteer
       const result = await page.evaluate(async (args) => {
         try {
           const formEl = document.querySelector('form#agregar-cliente') as HTMLFormElement;
@@ -1312,11 +1289,9 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
 
           const formData = new window.FormData(formEl);
           
-          // Asegurar Token CSRF
           const csrf = (document.querySelector('input[name="csrfmiddlewaretoken"]') as HTMLInputElement)?.value || '';
           formData.set('csrfmiddlewaretoken', csrf);
 
-          // Anexar comentarios de manera segura sin borrar los anteriores
           if (args.newComments) {
             let existingComments = '';
             if ((window as any).CKEDITOR && (window as any).CKEDITOR.instances['id_cliente-comentarios']) {
@@ -1326,7 +1301,6 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
             }
 
             const appendString = `\n\n[Nota Bot]: ${args.newComments}`.trim();
-            // Previene duplicados si el bot se re-ejecuta
             if (!existingComments.includes(args.newComments)) {
               formData.set('cliente-comentarios', `${existingComments}\n\n${appendString}`.trim());
             } else {
@@ -1334,25 +1308,20 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
             }
           }
 
-          // APLICAR CAMBIOS
-          // Inyectamos forzosamente los valores mapeados al FormData
           const recordUpdates = args.resolvedUpdates as Record<string, string>;
           for (const [key, value] of Object.entries(recordUpdates)) {
              formData.set(key, value);
           }
 
-          // Enviar la petición simulando el "submit" original
           const res = await fetch(args.url, { method: 'POST', body: formData });
           let effectiveStatus = res.status;
 
-          // Backend Django: Si es válido, redirecciona. Si falla validación, devuelve 200 pero NO redirecciona.
           if (res.redirected && (res.url.includes('/Instalaciones') || res.url.includes('/clientes'))) {
             effectiveStatus = 200;
           } else if (!res.redirected && res.url.includes('/editar/')) {
-            effectiveStatus = 422; // Unprocessable Entity
+            effectiveStatus = 422; 
           }
 
-          // Parsear errores específicos arrojados por Django en la vista HTML
           let errorMessages: string[] = [];
           if (effectiveStatus === 422) {
               const htmlText = await res.text();
@@ -1362,7 +1331,6 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
               errorMessages = alerts.map(a => a.textContent?.trim() || '').filter(Boolean);
           }
 
-          // Devolver el Payload final para depuración
           const finalPayload = Object.fromEntries(formData.entries());
 
           return { 
@@ -1387,8 +1355,8 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         status: result.status, 
         location: result.url, 
         formErrors: result.errors || [],
-        appliedUpdates: resolvedUpdates, // Retorna los cambios mapeados para verlos en n8n
-        debugPayload: result.debugPayload // Retorna el payload final que leyó Django
+        appliedUpdates: resolvedUpdates, 
+        debugPayload: result.debugPayload 
       };
 
     } finally {
@@ -1593,16 +1561,13 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
     const { browser, page } = await this.openPage();
 
     try {
-      // 1. Validar la sesión
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
       const ticketUrl = `${GEONET_BASE_URL}/tickets/editar/${params.ticketId}/`;
       logger.info(`[Puppeteer] Editando ticket en: ${ticketUrl}`);
 
-      // 2. Ir a la URL del formulario y esperar que renderice
       await this.safeGoto(page, ticketUrl, { waitForSelector: 'form#agregar-ticket' });
 
-      // 3. SELECCIÓN DE TÉCNICO
       const targetTechnician = params.tecnico || params.tecnicoName;
       if (targetTechnician) {
         const techOptions = await this.extractSelectOptions(page, '#id_tecnico');
@@ -1612,8 +1577,6 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         if (matchedOption && matchedOption.value) {
           logger.info(`[Puppeteer] Técnico encontrado: ${matchedOption.text} (ID: ${matchedOption.value})`);
           await page.select('#id_tecnico', matchedOption.value);
-
-          // Disparamos el evento 'change' para que se actualice el correo oculto del técnico en el DOM
           await page.evaluate(() => {
             const selectEl = document.querySelector('#id_tecnico') as HTMLSelectElement;
             if (selectEl) {
@@ -1626,7 +1589,6 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         }
       }
 
-      // 4. FORMATEO E INYECCIÓN DE FECHAS
       const effectiveInicio = this.formatGeonetDate(params.fecha_inicio || params.fechaInicio);
       const effectiveFinal = this.formatGeonetDate(params.fecha_final || params.fechaFinal);
 
@@ -1635,7 +1597,6 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
           const el = document.querySelector('#id_fecha_inicio') as HTMLInputElement;
           if (el) el.value = val;
         }, effectiveInicio);
-        logger.info(`[Puppeteer] Fecha inicio actualizada a: ${effectiveInicio}`);
       }
 
       if (effectiveFinal) {
@@ -1643,10 +1604,8 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
           const el = document.querySelector('#id_fecha_final') as HTMLInputElement;
           if (el) el.value = val;
         }, effectiveFinal);
-        logger.info(`[Puppeteer] Fecha final actualizada a: ${effectiveFinal}`);
       }
 
-      // 5. ACTUALIZAR OTROS CAMPOS ESTÁNDAR (Estado, Prioridad, Asunto)
       if (params.estado) await page.select('#id_estado', String(params.estado));
       if (params.prioridad) await page.select('#id_prioridad', String(params.prioridad));
 
@@ -1660,10 +1619,7 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         }
       }
 
-      // 6. ACTUALIZAR DESCRIPCIÓN (CKEDITOR)
-      // Si mandas un texto nuevo, lo inyecta. Si no mandas nada, conserva lo que el ticket ya tiene.
       if (params.descripcion) {
-        logger.info(`[Puppeteer] Actualizando descripción (CKEditor)...`);
         await page.evaluate((texto) => {
           if ((window as any).CKEDITOR && (window as any).CKEDITOR.instances.id_descripcion) {
             (window as any).CKEDITOR.instances.id_descripcion.setData(texto);
@@ -1674,13 +1630,12 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         }, params.descripcion);
       }
 
-      // 7. HACER SUBMIT
+      // OPTIMIZACIÓN: domcontentloaded es mucho más rápido que networkidle0
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle0' }),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
         page.click('button[type="submit"].btn-primary')
       ]);
 
-      // 8. COMPROBACIÓN DEL REDIRECT
       const finalUrl = page.url();
       const isSuccess = !finalUrl.includes('/editar/');
 
@@ -1695,6 +1650,7 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
       await page.close();
     }
   }
+
   // =========================================================================
   // UTILS Y HELPERS DE TEXTO
   // =========================================================================
@@ -1702,8 +1658,7 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
   private formatGeonetDate(dateInput: string | Date | undefined | null): string {
     if (!dateInput) return '';
     const d = new Date(dateInput);
-    if (Number.isNaN(d.getTime())) return ''; // Si la fecha es inválida, retorna vacío
-
+    if (Number.isNaN(d.getTime())) return ''; 
     const pad = (n: number) => String(n).padStart(2, '0');
     return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
