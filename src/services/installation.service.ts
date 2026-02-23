@@ -1210,7 +1210,7 @@ export class InstallationService extends GeonetBaseService {
     }
   }
 
-  public async editarInstalacionGeonet(params: { externalIdOrUser: string; installationId: string | number; updates: Record<string, any>; }): Promise<any> {
+public async editarInstalacionGeonet(params: { externalIdOrUser: string; installationId: string | number; updates: Record<string, any>; }): Promise<any> {
     const { externalIdOrUser, installationId, updates } = params;
     if (!externalIdOrUser || !installationId) throw Object.assign(new Error('externalIdOrUser e installationId son requeridos'), { statusCode: 400 });
 
@@ -1219,72 +1219,153 @@ export class InstallationService extends GeonetBaseService {
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
       const url = `${GEONET_BASE_URL}/Instalaciones/editar/${encodeURIComponent(externalIdOrUser)}/${encodeURIComponent(installationId)}/`;
-      await this.safeGoto(page, url, { waitForSelector: 'form' });
+      // Esperamos directamente por el formulario que muestra tu HTML
+      await this.safeGoto(page, url, { waitForSelector: 'form#agregar-cliente' });
 
+      // 1. Diccionario de mapeo estricto (Evita sobrescribir campos equivocados)
+      const resolvedUpdates: Record<string, string> = {};
+      const fieldMap: Record<string, string> = {
+        firstName: 'usr-first_name',
+        lastName: 'usr-last_name',
+        ci: 'perfil-cedula',
+        rut: 'perfil-cedula',
+        email: 'usr-email',
+        address: 'perfil-direccion',
+        city: 'perfil-ciudad',
+        phone: 'perfil-telefono',
+        coordinates: 'cliente-coordenadas',
+        ip: 'cliente-ip',
+        mac: 'cliente-mac_cpe',
+        estado: 'cliente-estado_instalacion', 
+        externalId: 'perfil-external_id',
+        costo: 'cliente-costo_instalacion',
+        clienteRb: 'cliente-cliente_rb',
+      };
+
+      // Mapeamos los campos de texto plano
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === undefined || value === null) continue;
+        // Excluimos las llaves que requieren resolución especial o de texto enriquecido
+        if (['routerName', 'zonaName', 'apName', 'planName', 'technicianName', 'comments', 'comentarios'].includes(key)) continue;
+
+        const formKey = fieldMap[key] || key;
+        resolvedUpdates[formKey] = String(value);
+      }
+
+      // 2. Resolución de Selectores (Texto legible -> Value/ID del HTML)
+      if (updates.routerName) {
+        const opts = await this.extractSelectOptions(page, '#id_cliente-router_cliente');
+        const id = this.findOptionIdObj(opts, String(updates.routerName));
+        if (id) resolvedUpdates['cliente-router_cliente'] = id;
+      }
+
+      if (updates.zonaName) {
+        const opts = await this.extractSelectOptions(page, '#id_cliente-zona_cliente');
+        const targetZone = ZONE_MAPPING[String(updates.zonaName).trim()] || updates.zonaName;
+        const id = this.findOptionIdObj(opts, String(targetZone));
+        if (id) resolvedUpdates['cliente-zona_cliente'] = id;
+      }
+
+      if (updates.apName) {
+        const opts = await this.extractSelectOptions(page, '#id_cliente-ap_cliente');
+        const targetAp = AP_MAPPING[String(updates.apName).trim()] || updates.apName;
+        const id = this.findOptionIdObj(opts, String(targetAp));
+        if (id) resolvedUpdates['cliente-ap_cliente'] = id;
+      }
+
+      if (updates.planName) {
+        const opts = await this.extractSelectOptions(page, '#id_cliente-plan_internet');
+        const id = this.findOptionIdObj(opts, String(updates.planName));
+        if (id) resolvedUpdates['cliente-plan_internet'] = id;
+      }
+
+      if (updates.technicianName) {
+        const opts = await this.extractSelectOptions(page, '#id_cliente-tecnico');
+        const id = this.findOptionIdObj(opts, String(updates.technicianName));
+        if (id) resolvedUpdates['cliente-tecnico'] = id;
+      }
+
+      const newComments = updates.comments || updates.comentarios;
+
+      // 3. Ejecutar actualización de FormData dentro del contexto de la página
       const result = await page.evaluate(async (args) => {
         try {
-          const formEl = document.querySelector('form') as HTMLFormElement;
-          if (!formEl) return { status: 502, error: 'No form found' };
+          const formEl = document.querySelector('form#agregar-cliente') as HTMLFormElement;
+          if (!formEl) return { status: 502, error: 'Formulario no encontrado en el DOM' };
 
           const formData = new window.FormData(formEl);
+          
+          // Asegurar Token CSRF
           const csrf = (document.querySelector('input[name="csrfmiddlewaretoken"]') as HTMLInputElement)?.value || '';
           formData.set('csrfmiddlewaretoken', csrf);
 
-          const normalize = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[-_\s]+/g, '');
-          const baseKeys = Array.from(formData.keys());
-
-          const recordUpdates = args.updates as Record<string, any>;
-          for (const [key, value] of Object.entries(recordUpdates)) {
-            if (value === undefined || value === null || key === 'csrfmiddlewaretoken') continue;
-            let targetKey = key;
-            if (!formData.has(key)) {
-              const nk = normalize(key);
-              const candidate = baseKeys.find(bk => normalize(String(bk)).includes(nk));
-              if (candidate) targetKey = String(candidate);
+          // Anexar comentarios sin borrar los anteriores en el CKEditor
+          if (args.newComments) {
+            let existingComments = '';
+            if ((window as any).CKEDITOR && (window as any).CKEDITOR.instances['id_cliente-comentarios']) {
+              existingComments = (window as any).CKEDITOR.instances['id_cliente-comentarios'].getData();
+            } else {
+              existingComments = (document.querySelector('#id_cliente-comentarios') as HTMLTextAreaElement)?.value || '';
             }
-            formData.set(targetKey, String(value));
+
+            const appendString = `\n\n[Nota Bot]: ${args.newComments}`.trim();
+            // Previene duplicados si el bot se re-ejecuta
+            if (!existingComments.includes(args.newComments)) {
+              formData.set('cliente-comentarios', `${existingComments}\n\n${appendString}`.trim());
+            } else {
+              formData.set('cliente-comentarios', existingComments);
+            }
           }
 
-          // 🔥 CAMBIO CLAVE: Usamos redirect: 'follow' (que es el valor por defecto, así que lo omitimos)
-          const res = await fetch(args.url, { method: 'POST', body: formData });
+          // Aplicar la data mapeada
+          const recordUpdates = args.resolvedUpdates as Record<string, string>;
+          for (const [key, value] of Object.entries(recordUpdates)) {
+              if (formData.has(key)) {
+                formData.set(key, value);
+              }
+          }
 
+          // Enviar la petición simulando el "submit" original
+          const res = await fetch(args.url, { method: 'POST', body: formData });
           let effectiveStatus = res.status;
 
-          // Si Django nos redirigió, significa que el formulario se guardó con éxito
-          if (res.redirected && res.url.includes('/Instalaciones')) {
+          // Backend Django: Si es válido, redirecciona. Si falla validación, devuelve código 200 pero no redirecciona
+          if (res.redirected && (res.url.includes('/Instalaciones') || res.url.includes('/clientes'))) {
             effectiveStatus = 200;
-          }
-          // Si no nos redirigió y seguimos en la URL de editar, hubo un error de validación en el formulario
-          else if (!res.redirected && res.url.includes('/editar/')) {
-            effectiveStatus = 422; // Unprocessable Entity
+          } else if (!res.redirected && res.url.includes('/editar/')) {
+            effectiveStatus = 422; 
           }
 
-          let bodySnippet = '';
-          try {
-            const txt = await res.text();
-            bodySnippet = txt ? txt.slice(0, 2000) : '';
-          } catch (e) {
-            bodySnippet = '';
+          // Parsear errores específicos arrojados por Django
+          let errorMessages: string[] = [];
+          if (effectiveStatus === 422) {
+              const htmlText = await res.text();
+              const parser = new DOMParser();
+              const doc = parser.parseFromString(htmlText, 'text/html');
+              // Buscar las clases de error en el DOM de la respuesta fallida
+              const alerts = Array.from(doc.querySelectorAll('.alert-danger, .errorlist, .text-danger, .help-block'));
+              errorMessages = alerts.map(a => a.textContent?.trim() || '').filter(Boolean);
           }
 
-          return { status: effectiveStatus, url: res.url, bodySnippet };
+          return { status: effectiveStatus, url: res.url, errors: errorMessages };
+
         } catch (e: any) {
           return { status: 500, error: e.toString() };
         }
-      }, { updates: updates || {}, url });
+      }, { resolvedUpdates, newComments, url });
 
-      // If the edit failed, capture server-side page HTML snippet for debugging
-      if (!result || (typeof result.status === 'number' && result.status >= 400)) {
-        try {
-          const pageHtml = await page.content();
-          const snippet = pageHtml ? pageHtml.slice(0, 4000) : '';
-          logger.error(`[Puppeteer][editarInstalacionGeonet] edit failed for external=${externalIdOrUser} installation=${installationId} status=${result?.status} url=${result?.url} bodySnippet=${result?.bodySnippet || ''} pageHtmlSnippet=${snippet}`);
-        } catch (e: any) {
-          logger.error(`[Puppeteer][editarInstalacionGeonet] error capturing page content: ${e?.message}`);
-        }
+      if (!result || result.status >= 400) {
+        logger.warn(`[Puppeteer][editarInstalacionGeonet] Edición rechazada. status=${result?.status}, errores=${JSON.stringify(result?.errors)}`);
+      } else {
+        logger.info(`[Puppeteer][editarInstalacionGeonet] Instalación editada con éxito. extId=${externalIdOrUser}`);
       }
 
-      return { status: result.status, location: result.url };
+      return { 
+        status: result.status, 
+        location: result.url, 
+        formErrors: result.errors || [] 
+      };
+
     } finally {
       await page.close();
     }
