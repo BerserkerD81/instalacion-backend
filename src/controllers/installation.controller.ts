@@ -203,50 +203,41 @@ export class InstallationController {
     }
   }
 
-  public async editarTicketWisphub(req: Request, res: Response): Promise<Response> {
+  // >>> NUEVO CONTROLADOR: Editar Ticket Geonet <<<
+  public async editarTicketGeonet(req: Request, res: Response): Promise<Response> {
     try {
-      const ticketId = String(req.params.ticketId ?? '').trim();
+      const ticketIdRaw: any = req.params.ticketId ?? req.params.id;
+      const ticketId = String(ticketIdRaw ?? '').trim();
       if (!ticketId) {
         return res.status(400).json({ message: 'ticketId es requerido en la URL' });
       }
 
       const body: any = req.body ?? {};
-      const archivoTicketBuffer = (req as any).file?.buffer as Buffer | undefined;
 
-      const result = await this.installationService.editarTicketWisphub({
+      const result = await this.installationService.editarTicketGeonet({
         ticketId,
-        updates: {
-          asuntosDefault: body.asuntosDefault ?? body.asuntos_default,
-          asuntos_default: body.asuntos_default,
-          asunto: body.asunto,
-          tecnico: body.tecnico ?? body.tecnicoId,
-          tecnicoId: body.tecnicoId,
-          tecnicoName: body.tecnicoName ?? body.technicianName,
-          descripcion: body.descripcion,
-          estado: body.estado,
-          prioridad: body.prioridad,
-          servicio: body.servicio,
-          fechaInicio: body.fechaInicio ?? body.fecha_inicio,
-          fecha_inicio: body.fecha_inicio,
-          fechaFinal: body.fechaFinal ?? body.fecha_final,
-          fecha_final: body.fecha_final,
-          origenReporte: body.origenReporte ?? body.origen_reporte,
-          origen_reporte: body.origen_reporte,
-          departamento: body.departamento,
-          emailTecnico: body.emailTecnico ?? body.email_tecnico,
-          email_tecnico: body.email_tecnico,
-          archivoTicket: archivoTicketBuffer ?? null,
-        },
+        ticketCategoryId: body.ticketCategoryId ? Number(body.ticketCategoryId) : 0, // Filler (para satisfacer tipado base)
+        fechaInicio: body.fechaInicio ?? body.fecha_inicio,
+        fechaFinal: body.fechaFinal ?? body.fecha_final,
+        tecnicoId: body.tecnicoId ?? body.tecnico,
+        tecnicoName: body.tecnicoName ?? body.technicianName ?? body.tecnico_nombre,
+        asunto: body.asunto,
+        descripcion: body.descripcion,
+        estado: body.estado,
+        prioridad: body.prioridad,
+        asuntosDefault: body.asuntosDefault ?? body.asuntos_default,
       });
 
-      const isOk = result.status >= 200 && result.status < 300;
+      const isOk = result.status >= 200 && result.status < 400;
       return res.status(isOk ? 200 : 502).json(result);
     } catch (error: any) {
-      logger.error(`Error editing Wisphub ticket: ${String(error)}`);
+      logger.error(`Error editing Geonet ticket: ${String(error)}`);
       const statusCode = error.statusCode || 500;
-      return res.status(statusCode).json({ message: error.message || 'Error editando ticket Wisphub', data: error.data });
+      return res.status(statusCode).json({ message: error.message || 'Error editando ticket en Geonet', data: error.data });
     }
   }
+
+
 
   public async buscarTicketWisphubPorCliente(req: Request, res: Response): Promise<Response> {
     try {

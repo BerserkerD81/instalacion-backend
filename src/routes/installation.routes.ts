@@ -61,7 +61,7 @@ router.get('/wisphub/staff', (req, res) => installationController.listarStaffWis
 router.patch(
 	'/wisphub/tickets/:ticketId',
 	upload.single('archivo_ticket'),
-	(req, res) => installationController.editarTicketWisphub(req, res)
+	(req, res) => installationController.editarTicketGeonet(req, res)
 );
 
 export default router;

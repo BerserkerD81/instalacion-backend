@@ -1452,60 +1452,125 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
     return { idTicket: matches[0]?.idTicket ?? null, matches, scanned, pages };
   }
 
-  public async editarTicketWisphub(params: { ticketId: string | number; updates: WisphubTicketUpdateInput; }): Promise<any> {
-    const { ticketId, updates } = params;
-    const { apiKey } = wisphubConfig;
-    if (!apiKey) throw Object.assign(new Error('Wisphub API config missing'), { statusCode: 500 });
+public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTicketInput): Promise<any> {
+    const start = Date.now();
+    const { browser, page } = await this.openPage();
 
-    const detailUrl = this.getWisphubTicketDetailUrl(ticketId);
-    const form = new FormData();
-    const sentFields: string[] = [];
+    try {
+      // 1. Validar la sesión
+      if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
-    const append = (key: string, val: any) => {
-      if (val !== undefined && val !== null && String(val).trim() !== '') {
-        form.append(key, String(val).trim());
-        sentFields.push(key);
+      const ticketUrl = `${GEONET_BASE_URL}/tickets/editar/${params.ticketId}/`;
+      logger.info(`[Puppeteer] Editando ticket en: ${ticketUrl}`);
+
+      // 2. Ir a la URL del formulario y esperar que renderice
+      await this.safeGoto(page, ticketUrl, { waitForSelector: 'form#agregar-ticket' });
+
+      // 3. SELECCIÓN DE TÉCNICO
+      const targetTechnician = params.tecnico || params.tecnicoName; 
+      if (targetTechnician) {
+        const techOptions = await this.extractSelectOptions(page, '#id_tecnico');
+        const normalizedTarget = targetTechnician.toLowerCase().trim();
+        const matchedOption = techOptions.find(opt => opt.text.toLowerCase().includes(normalizedTarget));
+
+        if (matchedOption && matchedOption.value) {
+          logger.info(`[Puppeteer] Técnico encontrado: ${matchedOption.text} (ID: ${matchedOption.value})`);
+          await page.select('#id_tecnico', matchedOption.value);
+          
+          // Disparamos el evento 'change' para que se actualice el correo oculto del técnico en el DOM
+          await page.evaluate(() => {
+            const selectEl = document.querySelector('#id_tecnico') as HTMLSelectElement;
+            if (selectEl) {
+              const event = new Event('change', { bubbles: true });
+              selectEl.dispatchEvent(event);
+            }
+          });
+        } else {
+          logger.warn(`[Puppeteer] No se encontró coincidencia para el técnico: ${targetTechnician}`);
+        }
       }
-    };
 
-    append('asuntos_default', updates.asuntos_default ?? updates.asuntosDefault);
-    append('asunto', updates.asunto);
-    append('descripcion', updates.descripcion);
-    append('estado', updates.estado);
-    append('prioridad', updates.prioridad);
-    append('servicio', updates.servicio);
-    append('fecha_inicio', updates.fecha_inicio ?? updates.fechaInicio);
-    append('fecha_final', updates.fecha_final ?? updates.fechaFinal);
-    append('origen_reporte', updates.origen_reporte ?? updates.origenReporte);
-    append('departamento', updates.departamento);
-    append('email_tecnico', updates.email_tecnico ?? updates.emailTecnico);
+      // 4. FORMATEO E INYECCIÓN DE FECHAS
+      const effectiveInicio = this.formatGeonetDate(params.fecha_inicio || params.fechaInicio);
+      const effectiveFinal = this.formatGeonetDate(params.fecha_final || params.fechaFinal);
 
-    let tecnicoId = updates.tecnico ?? updates.tecnicoId;
-    if (!tecnicoId && updates.tecnicoName) {
-      tecnicoId = await this.resolveWisphubTechnicianIdByName({ technicianName: updates.tecnicoName, apiKey });
+      if (effectiveInicio) {
+        await page.evaluate((val) => { 
+          const el = document.querySelector('#id_fecha_inicio') as HTMLInputElement;
+          if (el) el.value = val; 
+        }, effectiveInicio);
+        logger.info(`[Puppeteer] Fecha inicio actualizada a: ${effectiveInicio}`);
+      }
+
+      if (effectiveFinal) {
+        await page.evaluate((val) => { 
+          const el = document.querySelector('#id_fecha_final') as HTMLInputElement;
+          if (el) el.value = val; 
+        }, effectiveFinal);
+        logger.info(`[Puppeteer] Fecha final actualizada a: ${effectiveFinal}`);
+      }
+
+      // 5. ACTUALIZAR OTROS CAMPOS ESTÁNDAR (Estado, Prioridad, Asunto)
+      if (params.estado) await page.select('#id_estado', String(params.estado));
+      if (params.prioridad) await page.select('#id_prioridad', String(params.prioridad));
+      
+      const asuntoStr = params.asuntosDefault || (params as any).asuntos_default;
+      if (asuntoStr) {
+        await page.select('#id_asuntos_default', asuntoStr);
+        if (asuntoStr === 'Otro Asunto' && params.asunto) {
+          await page.waitForSelector('#id_asunto', { visible: true });
+          await page.evaluate(() => { (document.querySelector('#id_asunto') as HTMLInputElement).value = ''; }); 
+          await page.type('#id_asunto', params.asunto);
+        }
+      }
+
+      // 6. ACTUALIZAR DESCRIPCIÓN (CKEDITOR)
+      // Si mandas un texto nuevo, lo inyecta. Si no mandas nada, conserva lo que el ticket ya tiene.
+      if (params.descripcion) {
+        logger.info(`[Puppeteer] Actualizando descripción (CKEditor)...`);
+        await page.evaluate((texto) => {
+          if ((window as any).CKEDITOR && (window as any).CKEDITOR.instances.id_descripcion) {
+            (window as any).CKEDITOR.instances.id_descripcion.setData(texto);
+          } else {
+            const el = document.querySelector('#id_descripcion') as HTMLTextAreaElement;
+            if (el) el.value = texto;
+          }
+        }, params.descripcion);
+      }
+
+      // 7. HACER SUBMIT
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'networkidle0' }),
+        page.click('button[type="submit"].btn-primary')
+      ]);
+
+      // 8. COMPROBACIÓN DEL REDIRECT
+      const finalUrl = page.url();
+      const isSuccess = !finalUrl.includes('/editar/'); 
+      
+      logger.info(`[Puppeteer] Ticket ${params.ticketId} editado, isSuccess: ${isSuccess}, URL final: ${finalUrl}, t: ${Date.now() - start}ms`);
+
+      return { status: isSuccess ? 200 : 400, location: finalUrl };
+
+    } catch (error: any) {
+      logger.error(`Error en editarTicketGeonet: ${error.message}`);
+      throw error;
+    } finally {
+      await page.close();
     }
-    append('tecnico', tecnicoId);
-
-    if (updates.archivoTicket && Buffer.isBuffer(updates.archivoTicket)) {
-      form.append('archivo_ticket', updates.archivoTicket as any, { filename: 'archivo_ticket.bin' } as any);
-      sentFields.push('archivo_ticket');
-    }
-
-    const response = await axios.request({
-      method: 'patch',
-      url: detailUrl,
-      data: form,
-      headers: { ...form.getHeaders(), Authorization: `Api-Key ${apiKey}` },
-      maxBodyLength: Infinity,
-      validateStatus: () => true,
-    });
-
-    return { status: response.status, data: response.data, sentFields, method: 'PATCH', url: detailUrl };
   }
-
   // =========================================================================
   // UTILS Y HELPERS DE TEXTO
   // =========================================================================
+
+  private formatGeonetDate(dateInput: string | Date | undefined | null): string {
+    if (!dateInput) return '';
+    const d = new Date(dateInput);
+    if (Number.isNaN(d.getTime())) return ''; // Si la fecha es inválida, retorna vacío
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
 
   private normalizeText(value: string): string {
     return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
