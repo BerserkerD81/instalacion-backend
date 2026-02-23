@@ -712,11 +712,9 @@ export class InstallationService extends GeonetBaseService {
     }, selector);
   }
 
-  // --- GEONET ACTIVACIÓN ---
-  // --- GEONET ACTIVACIÓN ---
-  public async lookupPreinstallationActivation(params: {
+public async lookupPreinstallationActivation(params: {
     clientName: string;
-    client_ci?: string; // <-- Nuevo parámetro agregado
+    client_ci?: string;
     technicianName: string;
     planName?: string;
     installationRequestId?: number;
@@ -737,16 +735,12 @@ export class InstallationService extends GeonetBaseService {
     let effectivePlanName = planName;
     let resolvedRequestId = installationRequestId;
     let resolvedRequest: InstallationRequest | null = null;
-    // Require either an explicit installationRequestId or a client_ci (RUT).
+    
     if (resolvedRequestId === undefined) {
       if (!client_ci) {
         throw Object.assign(new Error('client_ci es requerido'), { statusCode: 400 });
       }
-
-      // Buscar estrictamente por RUT/CI
       resolvedRequestId = await this.findInstallationRequestIdByClientCi(client_ci);
-      logger.info('lookupPreinstallationActivation: after CI lookup', { resolvedRequestId });
-
       if (resolvedRequestId === undefined) {
         throw Object.assign(new Error('No se encontró la InstallationRequest para el RUT proporcionado'), { statusCode: 404 });
       }
@@ -770,12 +764,6 @@ export class InstallationService extends GeonetBaseService {
     }
 
     if (resolvedRequestId === undefined || !resolvedRequest) {
-      logger.warn('lookupPreinstallationActivation: InstallationRequest no encontrada', {
-        resolvedRequestId,
-        resolvedRequestExists: Boolean(resolvedRequest),
-        client_ci,
-        clientName,
-      });
       throw Object.assign(new Error('No se encontró la InstallationRequest en la BD'), { statusCode: 404 });
     }
 
@@ -810,29 +798,19 @@ export class InstallationService extends GeonetBaseService {
       const techOptions = await this.extractSelectOptions(page, 'select[name*="tecnico" i], select[id*="tecnico" i]');
       const planOptions = await this.extractSelectOptions(page, 'select[name*="plan" i], select[id*="plan" i]');
 
-      const firstAvailableIp = await page.evaluate(() => {
-        const ipNode = document.querySelector('#popover-ips-disponibles ul li a');
-        if (ipNode && ipNode.textContent) {
-          const match = ipNode.textContent.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
-          if (match) return match[0];
-        }
-        const textContentMatches = document.body.textContent?.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-        return textContentMatches[0] || null;
-      });
-
       const technicianId = this.findOptionIdObj(techOptions, technicianName);
       const planId = this.findOptionIdObj(planOptions, effectivePlanName);
 
       if (!technicianId) throw Object.assign(new Error('No se encontró técnico'), { statusCode: 404 });
       if (!planId) throw Object.assign(new Error('No se encontró plan'), { statusCode: 404 });
 
-      const activationPostStatus = await this.submitGeonetActivation({
+      // Ahora delegamos la responsabilidad de buscar la IP a submitGeonetActivation
+      const { status: activationPostStatus, ip: firstAvailableIp } = await this.submitGeonetActivation({
         ...params,
         page,
         activationLink,
         technicianId,
         planId,
-        firstAvailableIp,
         installationRequestId: resolvedRequestId,
       });
 
@@ -841,6 +819,8 @@ export class InstallationService extends GeonetBaseService {
       await page.close();
     }
   }
+
+
   private async findInstallationRequestIdByClientCi(clientCi: string): Promise<number | undefined> {
     await this.ensureDataSource();
     const repo = AppDataSource.getRepository(InstallationRequest);
@@ -878,21 +858,18 @@ export class InstallationService extends GeonetBaseService {
     return undefined;
   }
 
-  private async submitGeonetActivation(params: {
+private async submitGeonetActivation(params: {
     page: Page;
     activationLink: string;
     technicianId: string;
     planId: string;
-    firstAvailableIp: string | null;
     installationRequestId: number;
     zonaName?: string;
     routerName?: string;
     apName?: string;
     comments?: string;
-  }): Promise<number> {
-    const { page, activationLink, technicianId, planId, firstAvailableIp, installationRequestId, zonaName, routerName, apName } = params;
-
-    if (!firstAvailableIp) throw Object.assign(new Error('No se encontró una IP disponible'), { statusCode: 404 });
+  }): Promise<{ status: number; ip: string | null }> {
+    const { page, activationLink, technicianId, planId, installationRequestId, zonaName, routerName, apName } = params;
 
     await this.ensureDataSource();
     const repo = AppDataSource.getRepository(InstallationRequest);
@@ -908,26 +885,6 @@ export class InstallationService extends GeonetBaseService {
     let zonaValue = '';
     let apValue = '';
 
-    const extractScopeLetters = (s: string): string[] => {
-      const clean = s.toLowerCase();
-      const letters: Set<string> = new Set();
-      const rangeMatch = clean.match(/\b([a-d])\s*[-]\s*([a-d])\b/);
-      if (rangeMatch) {
-        for (let i = rangeMatch[1].charCodeAt(0); i <= rangeMatch[2].charCodeAt(0); i++) letters.add(String.fromCharCode(i));
-      }
-      const specificMatches = clean.matchAll(/(?:torre|block|edificio|sector)s?\s*([a-z](?:\s*y\s*[a-z])?)/g);
-      for (const m of specificMatches) {
-        if (m[1]) m[1].split(/\s*y\s*/).forEach(p => letters.add(p.trim()));
-      }
-      if (!/\d/.test(clean)) {
-        const endMatch = clean.match(/\b([a-z])[-]([a-z])\b/);
-        if (endMatch) {
-          for (let i = endMatch[1].charCodeAt(0); i <= endMatch[2].charCodeAt(0); i++) letters.add(String.fromCharCode(i));
-        }
-      }
-      return Array.from(letters);
-    };
-
     const getStrictName = (s: string) => {
       return s.toLowerCase()
         .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '')
@@ -938,6 +895,7 @@ export class InstallationService extends GeonetBaseService {
         .replace(/\s+/g, ' ').trim();
     };
 
+    // --- Lógica de mapeo original (Router, Zona, AP) ---
     if (routerName && routerOptions.length > 0) {
       routerValue = this.findOptionIdObj(routerOptions, String(routerName));
       if (!routerValue) routerValue = routerOptions.find(o => !o.text.includes('---------'))?.value || '';
@@ -1017,6 +975,57 @@ export class InstallationService extends GeonetBaseService {
       }
     }
 
+    // ==============================================================================
+    // NUEVO: INTERACCIÓN EN LA UI PARA REFRESCAR LA LISTA DE IPs
+    // ==============================================================================
+    logger.info(`[Puppeteer] Seleccionando Zona ID: ${zonaValue} y Router ID: ${routerValue} para refrescar IP...`);
+    
+    await page.evaluate((rVal, zVal, aVal) => {
+      const triggerChange = (selector: string, val: string) => {
+        const el = document.querySelector(selector) as HTMLSelectElement;
+        if (el && val) {
+          el.value = val;
+          // Si Geonet usa jQuery (ej. para Select2), lo disparamos nativo para jQuery también
+          if (typeof (window as any).jQuery !== 'undefined') {
+            (window as any).jQuery(el).trigger('change');
+          } else {
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+      };
+      
+      triggerChange('select[name*="zona_cliente" i]', zVal);
+      triggerChange('select[name*="router_cliente" i]', rVal);
+      triggerChange('select[name*="ap_cliente" i]', aVal);
+    }, routerValue, zonaValue, apValue);
+
+    // Damos un tiempo razonable para que el AJAX de Geonet vaya al backend y traiga las IPs de esa zona
+    await new Promise(r => setTimeout(r, 2500)); 
+
+    // Extraemos la nueva IP actualizada
+    const finalIp = await page.evaluate(() => {
+      const ipNode = document.querySelector('#popover-ips-disponibles ul li a');
+      if (ipNode && ipNode.textContent) {
+        const match = ipNode.textContent.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+        if (match) return match[0];
+      }
+      
+      const ipInput = document.querySelector('input[name*="ip" i]') as HTMLInputElement;
+      if (ipInput && ipInput.value) {
+        const match = ipInput.value.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+        if (match) return match[0];
+      }
+
+      const textContentMatches = document.body.textContent?.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+      return textContentMatches[0] || null;
+    });
+
+    if (!finalIp) {
+      throw Object.assign(new Error('No se encontró una IP disponible tras seleccionar la zona/router'), { statusCode: 404 });
+    }
+    logger.info(`[Puppeteer] IP obtenida tras actualización: ${finalIp}`);
+    // ==============================================================================
+
     const fullName = `${request.firstName || ''} ${request.lastName || ''}`.trim();
     const activationId = this.getActivationIdFromUrl(activationLink);
     const firstNameSlug = (request.firstName || '').split(/\s+/).filter(Boolean)[0]?.toLowerCase().replace(/\s+/g, '_') || '';
@@ -1024,15 +1033,11 @@ export class InstallationService extends GeonetBaseService {
     const ciNormalized = this.normalizeCedula(request.ci || '');
     const phoneValue = request.additionalPhone ? `${request.phone || ''},${request.additionalPhone}` : `${request.phone || ''}`;
 
-    // --- LÓGICA DE COMENTARIOS COMBINADOS ---
     const baseComments = request.comments || '';
     const incomingComments = params.comments !== undefined && params.comments !== null ? String(params.comments).trim() : '';
-
-    // Si llegan comentarios nuevos, los une con los antiguos. Si no, deja los antiguos.
     const commentsToSend = incomingComments
       ? `${baseComments}\n\n[Nota Bot]: ${incomingComments}`.trim()
       : baseComments;
-    // ----------------------------------------
 
     const result = await page.evaluate(async (args) => {
       try {
@@ -1071,7 +1076,7 @@ export class InstallationService extends GeonetBaseService {
         'cliente-costo_instalacion': '0',
         'cliente-comentarios': commentsToSend,
         'cliente-cliente_rb': externalIdBase,
-        'cliente-ip': firstAvailableIp,
+        'cliente-ip': finalIp, // Usamos la nueva IP extraída
         'cliente-router_cliente': routerValue,
         'cliente-zona_cliente': zonaValue,
         'cliente-plan_internet': planId,
@@ -1094,7 +1099,7 @@ export class InstallationService extends GeonetBaseService {
       }
     });
 
-    return result.status;
+    return { status: result.status, ip: finalIp };
   }
 
   // --- GEONET TICKETS ---
