@@ -732,6 +732,7 @@ export class InstallationService extends GeonetBaseService {
     activationPostStatus?: number;
   }> {
     const { clientName, client_ci, technicianName, planName, installationRequestId, agreedInstallationDate } = params;
+    logger.info('lookupPreinstallationActivation called', { clientName, client_ci, installationRequestId });
     let effectivePlanName = planName;
     let resolvedRequestId = installationRequestId;
     let resolvedRequest: InstallationRequest | null = null;
@@ -740,11 +741,13 @@ export class InstallationService extends GeonetBaseService {
       // 1. Prioridad: Buscar por RUT/CI si viene en la petición (ignorando puntos y guiones)
       if (client_ci) {
         resolvedRequestId = await this.findInstallationRequestIdByClientCi(client_ci);
+        logger.info('lookupPreinstallationActivation: after CI lookup', { resolvedRequestId });
       }
       
       // 2. Respaldo: Si no hay CI o no se encontró, buscar por nombre
       if (resolvedRequestId === undefined && clientName) {
         resolvedRequestId = await this.findInstallationRequestIdByClientName(clientName);
+        logger.info('lookupPreinstallationActivation: after name lookup', { resolvedRequestId });
       }
     }
 
@@ -849,7 +852,7 @@ export class InstallationService extends GeonetBaseService {
     // Limpiamos puntos, guiones y espacios, y forzamos minúsculas para la K
     const cleanCi = candidate.replace(/[\.\-\s]/g, '').toLowerCase().trim();
 
-    logger.debug('findInstallationRequestIdByClientCi: candidate/cleaned', { candidate, cleanCi });
+    logger.info('findInstallationRequestIdByClientCi: candidate/cleaned', { candidate, cleanCi });
 
     if (!cleanCi) return undefined;
 
