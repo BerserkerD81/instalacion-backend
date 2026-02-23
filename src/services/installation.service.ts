@@ -37,7 +37,7 @@ type GeonetTicketInput = {
   fechaInicio?: string;
   fechaFinal?: string;
   tecnicoId?: string;
-  tecnico?: string; 
+  tecnico?: string;
   tecnicoName?: string;
   asunto?: string;
   descripcion?: string;
@@ -49,8 +49,8 @@ type GeonetTicketInput = {
   departamentosDefault?: string;
   departamento?: string;
   archivoTicket?: Buffer | string | null;
-  fecha_inicio?: string; 
-  fecha_final?: string;  
+  fecha_inicio?: string;
+  fecha_final?: string;
 };
 
 type WisphubTicketUpdateInput = {
@@ -343,15 +343,15 @@ const ZONE_MAPPING: Record<string, string> = {
 // CLASE BASE: GEONET BROWSER SERVICE (Manejo de Sesión y Cloudflare)
 // =========================================================================
 export class GeonetBaseService {
-  
+
   protected async getBrowser(): Promise<Browser> {
     if ((global as any).__sharedBrowser) {
-      try { return (global as any).__sharedBrowser as Browser; } catch {}
+      try { return (global as any).__sharedBrowser as Browser; } catch { }
     }
 
     const MAX_ATTEMPTS = 3;
     let lastErr: any = null;
-    
+
     // Timeout elevado a 120s para soportar retos lentos
     const timeout = 120000;
     const wsUrl = `${BROWSER_WS}${BROWSER_WS.includes('?') ? '&' : '?'}stealth=true&timeout=${timeout}`;
@@ -395,21 +395,21 @@ export class GeonetBaseService {
     let browser = await this.getBrowser();
     try {
       const page = await browser.newPage();
-      page.setDefaultNavigationTimeout(60000); 
+      page.setDefaultNavigationTimeout(60000);
 
       try {
         await page.setRequestInterception(true);
         // Bloqueamos multimedia para ahorrar ancho de banda
-        const blockedResourceTypes = new Set(['image', 'font', 'media']); 
+        const blockedResourceTypes = new Set(['image', 'font', 'media']);
         page.on('request', (req) => {
           try {
             if (blockedResourceTypes.has(req.resourceType())) return req.abort();
             return req.continue();
           } catch (e) {
-            try { req.continue(); } catch (_) {}
+            try { req.continue(); } catch (_) { }
           }
         });
-      } catch (e) {}
+      } catch (e) { }
 
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
       await page.setExtraHTTPHeaders({
@@ -422,7 +422,7 @@ export class GeonetBaseService {
       return { browser, page };
     } catch (err: any) {
       logger.warn('[GeonetBase] newPage falló, reconectando...', err?.message);
-      try { await this.shutdownBrowser(); } catch (e) {}
+      try { await this.shutdownBrowser(); } catch (e) { }
       browser = await this.getBrowser();
       const page = await browser.newPage();
       return { browser, page };
@@ -441,10 +441,10 @@ export class GeonetBaseService {
       }
 
       logger.info('[GeonetBase] Cookies no válidas o expiradas. Iniciando Login...');
-      
-      const response = await page.goto(`${GEONET_BASE_URL}/accounts/login/`, { 
-        waitUntil: 'networkidle2', 
-        timeout: 90000 
+
+      const response = await page.goto(`${GEONET_BASE_URL}/accounts/login/`, {
+        waitUntil: 'networkidle2',
+        timeout: 90000
       });
 
       if (response) {
@@ -468,7 +468,7 @@ export class GeonetBaseService {
           await page.mouse.move(100, 100);
           await page.mouse.move(200, 200, { steps: 10 });
           await page.mouse.move(150, 300, { steps: 20 });
-        } catch (e) {}
+        } catch (e) { }
 
         try {
           await page.waitForFunction(() => {
@@ -499,7 +499,7 @@ export class GeonetBaseService {
       await page.click('input[name="password"]', { clickCount: 3 });
       await page.type('input[name="password"]', password, { delay: 75 });
 
-// 1. Usar domcontentloaded es mejor para formularios
+      // 1. Usar domcontentloaded es mejor para formularios
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
         page.click('button[type="submit"]')
@@ -515,7 +515,7 @@ export class GeonetBaseService {
         logger.info(`✅ Login exitoso y cookies guardadas. T: ${Date.now() - start}ms`);
         return true;
       }
-      
+
       // 3. CAPTURAR EL ERROR EXACTO DE LA PANTALLA
       const errorMsg = await page.evaluate(() => {
         // Busca las clases típicas de error en Django/Geonet
@@ -524,7 +524,8 @@ export class GeonetBaseService {
       });
 
       logger.error(`❌ Geonet rechazó las credenciales. Mensaje en pantalla: "${errorMsg}"`);
-      return false;} catch (err: any) {
+      return false;
+    } catch (err: any) {
       logger.error(`Error en ensureSession: ${err.message}`);
       return false;
     }
@@ -533,14 +534,14 @@ export class GeonetBaseService {
   protected async safeGoto(page: Page, url: string, opts?: { waitForSelector?: string; timeout?: number }): Promise<any> {
     const timeout = opts?.timeout ?? 45000;
     let response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
-    
+
     if (page.url().includes('/accounts/login/')) {
       logger.info('[GeonetBase] Redirigido a Login inesperadamente. Re-autenticando...');
       const ok = await this.ensureSession(page, { force: true });
       if (!ok) throw new Error('No se pudo autenticar en Geonet');
       response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
     }
-    
+
     if (opts?.waitForSelector) {
       await page.waitForSelector(opts.waitForSelector, { timeout: 15000 }).catch(() => null);
     }
@@ -558,7 +559,7 @@ export class GeonetBaseService {
 // 1. SERVICIO DE IMPORTACIÓN (Hereda de GeonetBaseService)
 // =========================================================================
 export class GeonetImportService extends GeonetBaseService {
-  
+
   public async importFromGeonet(opts: GeonetImportOptions): Promise<void> {
     await this.ensureDataSource();
     const { browser, page } = await this.openPage();
@@ -572,7 +573,7 @@ export class GeonetImportService extends GeonetBaseService {
         const html = await page.content();
         await this.importSectorials(html, opts.dataPageUrl);
       }
-      
+
       if (opts.onuPageUrl) {
         await this.safeGoto(page, opts.onuPageUrl);
         const html = await page.content();
@@ -596,7 +597,7 @@ export class GeonetImportService extends GeonetBaseService {
     const $ = cheerio.load(html);
     const records: any[] = [];
     const headers: string[] = [];
-    
+
     $('table thead tr th').each((i, el) => {
       let text = $(el).text().replace(/\s+/g, ' ').trim();
       if (!text) text = `col_${i}`;
@@ -608,7 +609,7 @@ export class GeonetImportService extends GeonetBaseService {
       $(row).find('td').each((j, cell) => {
         const header = headers[j];
         if (header && !header.startsWith('col_')) {
-            record[header] = $(cell).text().replace(/\n/g, '').trim();
+          record[header] = $(cell).text().replace(/\n/g, '').trim();
         }
       });
       if (Object.keys(record).length > 0) records.push(record);
@@ -620,10 +621,10 @@ export class GeonetImportService extends GeonetBaseService {
   private async importSectorials(html: string, url: string) {
     logger.info(`Analizando HTML de Sectoriales desde: ${url}`);
     const records = this.parseHtmlTable(html);
-    
+
     if (records.length === 0) {
-        logger.warn('Tabla vacía o no detectada. No se realizaron cambios en la BD.');
-        return;
+      logger.warn('Tabla vacía o no detectada. No se realizaron cambios en la BD.');
+      return;
     }
 
     logger.info(`Procesando ${records.length} sectoriales...`);
@@ -632,45 +633,45 @@ export class GeonetImportService extends GeonetBaseService {
     let count = 0;
 
     for (const row of records) {
-        const entity = new SectorialNode();
-        const getVal = (keyPart: string) => {
-            const realKey = Object.keys(row).find(k => k.toLowerCase().includes(keyPart.toLowerCase()));
-            return realKey ? row[realKey] : null;
-        };
+      const entity = new SectorialNode();
+      const getVal = (keyPart: string) => {
+        const realKey = Object.keys(row).find(k => k.toLowerCase().includes(keyPart.toLowerCase()));
+        return realKey ? row[realKey] : null;
+      };
 
-        entity.nombre = this.clean(getVal('Nombre')) ?? ''; 
-        entity.tipo = this.clean(getVal('Tipo'));
-        entity.ip = this.clean(getVal('Ip'));
-        entity.usuario = this.clean(getVal('Usuario'));
-        entity.password = this.clean(getVal('Password'));
-        entity.zona = this.clean(getVal('Zona')); 
-        entity.coordenadas = this.clean(getVal('Coordenadas')); 
-        entity.totalClientes = this.cleanNum(getVal('Total de Clientes'));
-        entity.ssid = this.clean(getVal('SSID'));
-        entity.frecuencias = this.clean(getVal('Frecuencia'));
-        entity.nodoTorre = this.clean(getVal('Nodo/Torre'));
-        entity.comentarios = this.clean(getVal('Comentarios'));
-        entity.accion = this.clean(getVal('Acción'));
-        entity.fallaGeneral = (getVal('Falla General') === 'Si' || getVal('Falla') === 'Si') ? 'Si' : 'No';
+      entity.nombre = this.clean(getVal('Nombre')) ?? '';
+      entity.tipo = this.clean(getVal('Tipo'));
+      entity.ip = this.clean(getVal('Ip'));
+      entity.usuario = this.clean(getVal('Usuario'));
+      entity.password = this.clean(getVal('Password'));
+      entity.zona = this.clean(getVal('Zona'));
+      entity.coordenadas = this.clean(getVal('Coordenadas'));
+      entity.totalClientes = this.cleanNum(getVal('Total de Clientes'));
+      entity.ssid = this.clean(getVal('SSID'));
+      entity.frecuencias = this.clean(getVal('Frecuencia'));
+      entity.nodoTorre = this.clean(getVal('Nodo/Torre'));
+      entity.comentarios = this.clean(getVal('Comentarios'));
+      entity.accion = this.clean(getVal('Acción'));
+      entity.fallaGeneral = (getVal('Falla General') === 'Si' || getVal('Falla') === 'Si') ? 'Si' : 'No';
 
-        if (entity.nombre) {
-            processedNames.push(entity.nombre); 
-            const existing = await repo.findOne({ where: { nombre: entity.nombre } });
-            if (existing) {
-                repo.merge(existing, entity);
-                await repo.save(existing);
-            } else {
-                await repo.save(entity);
-            }
-            count++;
+      if (entity.nombre) {
+        processedNames.push(entity.nombre);
+        const existing = await repo.findOne({ where: { nombre: entity.nombre } });
+        if (existing) {
+          repo.merge(existing, entity);
+          await repo.save(existing);
+        } else {
+          await repo.save(entity);
         }
+        count++;
+      }
     }
 
     if (processedNames.length > 0) {
-        const deleteResult = await repo.delete({ nombre: Not(In(processedNames)) });
-        if (deleteResult.affected && deleteResult.affected > 0) {
-            logger.info(`Limpieza: Se eliminaron ${deleteResult.affected} sectoriales antiguos.`);
-        }
+      const deleteResult = await repo.delete({ nombre: Not(In(processedNames)) });
+      if (deleteResult.affected && deleteResult.affected > 0) {
+        logger.info(`Limpieza: Se eliminaron ${deleteResult.affected} sectoriales antiguos.`);
+      }
     }
     logger.info(`Sectoriales: ${count} sincronizados correctamente.`);
   }
@@ -678,16 +679,16 @@ export class GeonetImportService extends GeonetBaseService {
   private async importOnus(html: string, url: string) {
     logger.info(`Analizando HTML de ONUs desde: ${url}`);
     try {
-        const records = this.parseHtmlTable(html);
-        if (records.length === 0) return;
-        let count = 0;
-        for (const row of records) {
-            const serial = row['Serial'] || row['MAC'] || row['Mac Address'];
-            if (serial) count++;
-        }
-        logger.info(`ONUs: ${count} detectadas (Simulación).`);
+      const records = this.parseHtmlTable(html);
+      if (records.length === 0) return;
+      let count = 0;
+      for (const row of records) {
+        const serial = row['Serial'] || row['MAC'] || row['Mac Address'];
+        if (serial) count++;
+      }
+      logger.info(`ONUs: ${count} detectadas (Simulación).`);
     } catch (err: any) {
-        logger.error(`Error importando ONUs: ${err.message}`);
+      logger.error(`Error importando ONUs: ${err.message}`);
     }
   }
 }
@@ -712,7 +713,7 @@ export class InstallationService extends GeonetBaseService {
   }
 
   // --- GEONET ACTIVACIÓN ---
-// --- GEONET ACTIVACIÓN ---
+  // --- GEONET ACTIVACIÓN ---
   public async lookupPreinstallationActivation(params: {
     clientName: string;
     client_ci?: string; // <-- Nuevo parámetro agregado
@@ -765,7 +766,7 @@ export class InstallationService extends GeonetBaseService {
           resolvedRequest.agreedInstallationDate = parsed;
           await repo.save(resolvedRequest as any);
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     if (resolvedRequestId === undefined || !resolvedRequest) {
@@ -808,7 +809,7 @@ export class InstallationService extends GeonetBaseService {
 
       const techOptions = await this.extractSelectOptions(page, 'select[name*="tecnico" i], select[id*="tecnico" i]');
       const planOptions = await this.extractSelectOptions(page, 'select[name*="plan" i], select[id*="plan" i]');
-      
+
       const firstAvailableIp = await page.evaluate(() => {
         const ipNode = document.querySelector('#popover-ips-disponibles ul li a');
         if (ipNode && ipNode.textContent) {
@@ -843,7 +844,7 @@ export class InstallationService extends GeonetBaseService {
   private async findInstallationRequestIdByClientCi(clientCi: string): Promise<number | undefined> {
     await this.ensureDataSource();
     const repo = AppDataSource.getRepository(InstallationRequest);
-    
+
     // Extraemos un posible RUT dentro del texto (soporta formatos con o sin puntos y con o sin guión)
     const input = String(clientCi || '').trim();
     const rutMatch = input.match(/(\d{1,2}(?:\.\d{3}){1,2}-?[0-9kK])|(\d{7,8}-?[0-9kK])/);
@@ -859,8 +860,8 @@ export class InstallationService extends GeonetBaseService {
     // Comparamos normalizando la columna de la BD a minúsculas y sin puntos/guiones
     // Usamos igualdad estricta para evitar falsos positivos
     const matches = await repo.createQueryBuilder('r')
-        .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) = :ci', { ci: `${cleanCi}` })
-        .getMany();
+      .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) = :ci', { ci: `${cleanCi}` })
+      .getMany();
 
     if (matches.length === 1) {
       const req = matches[0];
@@ -877,7 +878,7 @@ export class InstallationService extends GeonetBaseService {
     return undefined;
   }
 
-private async submitGeonetActivation(params: {
+  private async submitGeonetActivation(params: {
     page: Page;
     activationLink: string;
     technicianId: string;
@@ -919,22 +920,22 @@ private async submitGeonetActivation(params: {
         if (m[1]) m[1].split(/\s*y\s*/).forEach(p => letters.add(p.trim()));
       }
       if (!/\d/.test(clean)) {
-         const endMatch = clean.match(/\b([a-z])[-]([a-z])\b/);
-         if (endMatch) {
-            for (let i = endMatch[1].charCodeAt(0); i <= endMatch[2].charCodeAt(0); i++) letters.add(String.fromCharCode(i));
-         }
+        const endMatch = clean.match(/\b([a-z])[-]([a-z])\b/);
+        if (endMatch) {
+          for (let i = endMatch[1].charCodeAt(0); i <= endMatch[2].charCodeAt(0); i++) letters.add(String.fromCharCode(i));
+        }
       }
       return Array.from(letters);
     };
 
     const getStrictName = (s: string) => {
-        return s.toLowerCase()
-          .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '') 
-          .replace(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/g, '')
-          .replace(/(?:torre|edificio|block|sector)\s*[-:._]?\s*([a-z0-9]+)/g, '')
-          .replace(/\b(de|del|el|la|los|las|y|en|ii|iii|iv|v|ix)\b/g, '')
-          .replace(/[-:._()]/g, ' ')
-          .replace(/\s+/g, ' ').trim();
+      return s.toLowerCase()
+        .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '')
+        .replace(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/g, '')
+        .replace(/(?:torre|edificio|block|sector)\s*[-:._]?\s*([a-z0-9]+)/g, '')
+        .replace(/\b(de|del|el|la|los|las|y|en|ii|iii|iv|v|ix)\b/g, '')
+        .replace(/[-:._()]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
     };
 
     if (routerName && routerOptions.length > 0) {
@@ -946,28 +947,28 @@ private async submitGeonetActivation(params: {
       if (zonaName && String(zonaName).trim()) {
         const mappedTarget = ZONE_MAPPING[String(zonaName).trim()] || String(zonaName).trim();
         const directMatch = zonaOptions.find(o => o.text.trim().toLowerCase() === mappedTarget.toLowerCase());
-        
+
         if (directMatch) {
-            zonaValue = directMatch.value;
+          zonaValue = directMatch.value;
         } else {
-            const extractZoneId = (s: string) => s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
-            const targetId = extractZoneId(mappedTarget);
-            const targetTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
-            let bestZoneValue = '';
-            let bestZoneScore = -1;
+          const extractZoneId = (s: string) => s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
+          const targetId = extractZoneId(mappedTarget);
+          const targetTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
+          let bestZoneValue = '';
+          let bestZoneScore = -1;
 
-            zonaOptions.forEach(opt => {
-              if (!opt.value || opt.text.includes('---------')) return;
-              const optId = extractZoneId(opt.text);
-              const optCleanName = getStrictName(opt.text);
+          zonaOptions.forEach(opt => {
+            if (!opt.value || opt.text.includes('---------')) return;
+            const optId = extractZoneId(opt.text);
+            const optCleanName = getStrictName(opt.text);
 
-              if (targetId && optId && targetId !== optId) return;
-              let score = 0;
-              targetTokens.forEach(t => { if (optCleanName.includes(t)) score += 500; });
-              if (targetId && optId && targetId === optId) score += 1000;
-              if (score > bestZoneScore) { bestZoneScore = score; bestZoneValue = opt.value; }
-            });
-            zonaValue = bestZoneScore >= 100 ? bestZoneValue : (zonaOptions.find(o => !o.text.includes('---------'))?.value || '');
+            if (targetId && optId && targetId !== optId) return;
+            let score = 0;
+            targetTokens.forEach(t => { if (optCleanName.includes(t)) score += 500; });
+            if (targetId && optId && targetId === optId) score += 1000;
+            if (score > bestZoneScore) { bestZoneScore = score; bestZoneValue = opt.value; }
+          });
+          zonaValue = bestZoneScore >= 100 ? bestZoneValue : (zonaOptions.find(o => !o.text.includes('---------'))?.value || '');
         }
       } else {
         zonaValue = zonaOptions.find(o => !o.text.includes('---------'))?.value || '';
@@ -980,36 +981,36 @@ private async submitGeonetActivation(params: {
         const directMatch = apOptions.find(o => o.text.trim().toLowerCase() === mappedTarget.toLowerCase());
 
         if (directMatch) {
-            apValue = directMatch.value;
+          apValue = directMatch.value;
         } else {
-            const extractMeta = (s: string) => ({
-               zone: s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1],
-               cto: s.match(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/i)?.[1],
-               tower: s.match(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/i)?.[1]?.toLowerCase()
-            });
+          const extractMeta = (s: string) => ({
+            zone: s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1],
+            cto: s.match(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/i)?.[1],
+            tower: s.match(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/i)?.[1]?.toLowerCase()
+          });
 
-            const tMeta = extractMeta(mappedTarget);
-            const tTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
-            let bestApValue = '';
-            let bestApScore = -1;
+          const tMeta = extractMeta(mappedTarget);
+          const tTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
+          let bestApValue = '';
+          let bestApScore = -1;
 
-            apOptions.forEach(opt => {
-              if (!opt.value || opt.text.includes('---------')) return;
-              const oMeta = extractMeta(opt.text);
-              const oCleanName = getStrictName(opt.text);
+          apOptions.forEach(opt => {
+            if (!opt.value || opt.text.includes('---------')) return;
+            const oMeta = extractMeta(opt.text);
+            const oCleanName = getStrictName(opt.text);
 
-              if (tTokens.length > 0 && !tTokens.some(t => oCleanName.includes(t))) return;
-              if (tMeta.zone && oMeta.zone && tMeta.zone !== oMeta.zone) return;
-              if (tMeta.cto && oMeta.cto && tMeta.cto !== oMeta.cto) return;
+            if (tTokens.length > 0 && !tTokens.some(t => oCleanName.includes(t))) return;
+            if (tMeta.zone && oMeta.zone && tMeta.zone !== oMeta.zone) return;
+            if (tMeta.cto && oMeta.cto && tMeta.cto !== oMeta.cto) return;
 
-              let score = 1000;
-              tTokens.forEach(t => { if (oCleanName.includes(t)) score += 100; });
-              if (tMeta.tower && oMeta.tower && tMeta.tower === oMeta.tower) score += 500;
-              if (tMeta.cto && oMeta.cto && tMeta.cto === oMeta.cto) score += 300;
+            let score = 1000;
+            tTokens.forEach(t => { if (oCleanName.includes(t)) score += 100; });
+            if (tMeta.tower && oMeta.tower && tMeta.tower === oMeta.tower) score += 500;
+            if (tMeta.cto && oMeta.cto && tMeta.cto === oMeta.cto) score += 300;
 
-              if (score > bestApScore) { bestApScore = score; bestApValue = opt.value; }
-            });
-            apValue = bestApScore >= 1000 ? bestApValue : (apOptions.find(o => !o.text.includes('---------'))?.value || '');
+            if (score > bestApScore) { bestApScore = score; bestApValue = opt.value; }
+          });
+          apValue = bestApScore >= 1000 ? bestApValue : (apOptions.find(o => !o.text.includes('---------'))?.value || '');
         }
       } else {
         apValue = apOptions.find(o => !o.text.includes('---------'))?.value || '';
@@ -1022,15 +1023,15 @@ private async submitGeonetActivation(params: {
     const externalIdBase = activationId ? `${activationId}_${firstNameSlug}` : `${request.id}_${firstNameSlug}`;
     const ciNormalized = this.normalizeCedula(request.ci || '');
     const phoneValue = request.additionalPhone ? `${request.phone || ''},${request.additionalPhone}` : `${request.phone || ''}`;
-    
+
     // --- LÓGICA DE COMENTARIOS COMBINADOS ---
     const baseComments = request.comments || '';
     const incomingComments = params.comments !== undefined && params.comments !== null ? String(params.comments).trim() : '';
 
     // Si llegan comentarios nuevos, los une con los antiguos. Si no, deja los antiguos.
-    const commentsToSend = incomingComments 
-        ? `${baseComments}\n\n[Nota Bot]: ${incomingComments}`.trim() 
-        : baseComments;
+    const commentsToSend = incomingComments
+      ? `${baseComments}\n\n[Nota Bot]: ${incomingComments}`.trim()
+      : baseComments;
     // ----------------------------------------
 
     const result = await page.evaluate(async (args) => {
@@ -1097,7 +1098,7 @@ private async submitGeonetActivation(params: {
   }
 
   // --- GEONET TICKETS ---
-public async crearTicket(params: GeonetTicketInput): Promise<any> {
+  public async crearTicket(params: GeonetTicketInput): Promise<any> {
     const start = Date.now();
     const { browser, page } = await this.openPage();
 
@@ -1117,11 +1118,11 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
       const effectiveTecnicoId = params.tecnicoId || (params as any).tecnico;
 
       // 3. Llenar campos Select y de texto estándar
-      
+
       // ASUNTO
       const asuntoDefaultStr = params.asuntosDefault || (params as any).asuntos_default || 'Instalación';
       await page.select('#id_asuntos_default', asuntoDefaultStr);
-      
+
       // Manejar el caso donde el select despliega un input adicional
       if (asuntoDefaultStr === 'Otro Asunto' && params.asunto) {
         await page.waitForSelector('#id_asunto', { visible: true });
@@ -1146,13 +1147,13 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
 
       // 4. Llenar fechas (inyectando el valor directamente para evadir bloqueos del datepicker)
       if (effectiveInicio) {
-        await page.evaluate((val) => { 
-          (document.querySelector('#id_fecha_inicio') as HTMLInputElement).value = val; 
+        await page.evaluate((val) => {
+          (document.querySelector('#id_fecha_inicio') as HTMLInputElement).value = val;
         }, effectiveInicio);
       }
       if (effectiveFinal) {
-        await page.evaluate((val) => { 
-          (document.querySelector('#id_fecha_final') as HTMLInputElement).value = val; 
+        await page.evaluate((val) => {
+          (document.querySelector('#id_fecha_final') as HTMLInputElement).value = val;
         }, effectiveFinal);
       }
 
@@ -1177,8 +1178,8 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
       // 7. Comprobar éxito
       const finalUrl = page.url();
       // Si el form fue exitoso, Django hace un redirect (HTTP 302) y salimos de la URL de "/agregar/"
-      const isSuccess = !finalUrl.includes('/agregar/'); 
-      
+      const isSuccess = !finalUrl.includes('/agregar/');
+
       logger.info(`[Puppeteer] Ticket creado, isSuccess: ${isSuccess}, URL final: ${finalUrl}, t: ${Date.now() - start}ms`);
 
       // Devolvemos status 200 en caso de éxito, 400 si se quedó atascado en el formulario
@@ -1198,7 +1199,7 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
     try {
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
       await this.safeGoto(page, `${GEONET_BASE_URL}/tickets/eliminar/${params.ticketId}/`);
-      
+
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
         page.click('button[type="submit"], input[type="submit"]')
@@ -1244,11 +1245,20 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
             formData.set(targetKey, String(value));
           }
 
-          const res = await fetch(args.url, { method: 'POST', body: formData, redirect: 'manual' });
-          let effectiveStatus = res.status;
-          if (res.status === 302 && res.headers.get('location')?.includes('/Instalaciones')) effectiveStatus = 200;
+          // 🔥 CAMBIO CLAVE: Usamos redirect: 'follow' (que es el valor por defecto, así que lo omitimos)
+          const res = await fetch(args.url, { method: 'POST', body: formData });
 
-          // attempt to capture a small snippet of the response body for diagnostics
+          let effectiveStatus = res.status;
+
+          // Si Django nos redirigió, significa que el formulario se guardó con éxito
+          if (res.redirected && res.url.includes('/Instalaciones')) {
+            effectiveStatus = 200;
+          }
+          // Si no nos redirigió y seguimos en la URL de editar, hubo un error de validación en el formulario
+          else if (!res.redirected && res.url.includes('/editar/')) {
+            effectiveStatus = 422; // Unprocessable Entity
+          }
+
           let bodySnippet = '';
           try {
             const txt = await res.text();
@@ -1285,7 +1295,7 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
     try {
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
       await this.safeGoto(page, `${GEONET_BASE_URL}/Instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`);
-      
+
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
         page.click('button[type="submit"], input[type="submit"]')
@@ -1335,7 +1345,7 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
     const repo = AppDataSource.getRepository(InstallationRequest);
     const wisphubResult = await this.notifyWisphub(data as any);
     if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 400)) {
-        throw new Error('Wisphub error');
+      throw new Error('Wisphub error');
     }
     return repo.save(repo.create(data as any) as any);
   }
@@ -1472,7 +1482,7 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
     return { idTicket: matches[0]?.idTicket ?? null, matches, scanned, pages };
   }
 
-public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTicketInput): Promise<any> {
+  public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTicketInput): Promise<any> {
     const start = Date.now();
     const { browser, page } = await this.openPage();
 
@@ -1487,7 +1497,7 @@ public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTi
       await this.safeGoto(page, ticketUrl, { waitForSelector: 'form#agregar-ticket' });
 
       // 3. SELECCIÓN DE TÉCNICO
-      const targetTechnician = params.tecnico || params.tecnicoName; 
+      const targetTechnician = params.tecnico || params.tecnicoName;
       if (targetTechnician) {
         const techOptions = await this.extractSelectOptions(page, '#id_tecnico');
         const normalizedTarget = targetTechnician.toLowerCase().trim();
@@ -1496,7 +1506,7 @@ public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTi
         if (matchedOption && matchedOption.value) {
           logger.info(`[Puppeteer] Técnico encontrado: ${matchedOption.text} (ID: ${matchedOption.value})`);
           await page.select('#id_tecnico', matchedOption.value);
-          
+
           // Disparamos el evento 'change' para que se actualice el correo oculto del técnico en el DOM
           await page.evaluate(() => {
             const selectEl = document.querySelector('#id_tecnico') as HTMLSelectElement;
@@ -1515,17 +1525,17 @@ public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTi
       const effectiveFinal = this.formatGeonetDate(params.fecha_final || params.fechaFinal);
 
       if (effectiveInicio) {
-        await page.evaluate((val) => { 
+        await page.evaluate((val) => {
           const el = document.querySelector('#id_fecha_inicio') as HTMLInputElement;
-          if (el) el.value = val; 
+          if (el) el.value = val;
         }, effectiveInicio);
         logger.info(`[Puppeteer] Fecha inicio actualizada a: ${effectiveInicio}`);
       }
 
       if (effectiveFinal) {
-        await page.evaluate((val) => { 
+        await page.evaluate((val) => {
           const el = document.querySelector('#id_fecha_final') as HTMLInputElement;
-          if (el) el.value = val; 
+          if (el) el.value = val;
         }, effectiveFinal);
         logger.info(`[Puppeteer] Fecha final actualizada a: ${effectiveFinal}`);
       }
@@ -1533,13 +1543,13 @@ public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTi
       // 5. ACTUALIZAR OTROS CAMPOS ESTÁNDAR (Estado, Prioridad, Asunto)
       if (params.estado) await page.select('#id_estado', String(params.estado));
       if (params.prioridad) await page.select('#id_prioridad', String(params.prioridad));
-      
+
       const asuntoStr = params.asuntosDefault || (params as any).asuntos_default;
       if (asuntoStr) {
         await page.select('#id_asuntos_default', asuntoStr);
         if (asuntoStr === 'Otro Asunto' && params.asunto) {
           await page.waitForSelector('#id_asunto', { visible: true });
-          await page.evaluate(() => { (document.querySelector('#id_asunto') as HTMLInputElement).value = ''; }); 
+          await page.evaluate(() => { (document.querySelector('#id_asunto') as HTMLInputElement).value = ''; });
           await page.type('#id_asunto', params.asunto);
         }
       }
@@ -1566,8 +1576,8 @@ public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTi
 
       // 8. COMPROBACIÓN DEL REDIRECT
       const finalUrl = page.url();
-      const isSuccess = !finalUrl.includes('/editar/'); 
-      
+      const isSuccess = !finalUrl.includes('/editar/');
+
       logger.info(`[Puppeteer] Ticket ${params.ticketId} editado, isSuccess: ${isSuccess}, URL final: ${finalUrl}, t: ${Date.now() - start}ms`);
 
       return { status: isSuccess ? 200 : 400, location: finalUrl };
@@ -1678,8 +1688,8 @@ public async editarTicketGeonet(params: { ticketId: string | number } & GeonetTi
     await this.ensureDataSource();
     const repo = AppDataSource.getRepository(InstallationRequest);
     const req = await repo.createQueryBuilder('r')
-        .where('LOWER(CONCAT(r.firstName, " ", r.lastName)) LIKE :name', { name: `%${clientName.toLowerCase()}%` })
-        .getOne();
+      .where('LOWER(CONCAT(r.firstName, " ", r.lastName)) LIKE :name', { name: `%${clientName.toLowerCase()}%` })
+      .getOne();
     return req?.id;
   }
 
