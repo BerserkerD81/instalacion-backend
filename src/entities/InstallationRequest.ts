@@ -12,6 +12,7 @@ export class InstallationRequest {
   lastName!: string;
 
   @Column()
+  @Column({ unique: true })
   ci!: string;
 
   @Column()

@@ -738,16 +738,26 @@ export class InstallationService extends GeonetBaseService {
     let resolvedRequest: InstallationRequest | null = null;
 
     if (resolvedRequestId === undefined) {
-      // 1. Prioridad: Buscar por RUT/CI si viene en la petición (ignorando puntos y guiones)
+      // 1. Prioridad: Si se proporciona RUT/CI, buscar únicamente por ese RUT (estricto)
       if (client_ci) {
-        resolvedRequestId = await this.findInstallationRequestIdByClientCi(client_ci);
-        logger.info('lookupPreinstallationActivation: after CI lookup', { resolvedRequestId });
-      }
-      
-      // 2. Respaldo: Si no hay CI o no se encontró, buscar por nombre
-      if (resolvedRequestId === undefined && clientName) {
-        resolvedRequestId = await this.findInstallationRequestIdByClientName(clientName);
-        logger.info('lookupPreinstallationActivation: after name lookup', { resolvedRequestId });
+        try {
+          resolvedRequestId = await this.findInstallationRequestIdByClientCi(client_ci);
+          logger.info('lookupPreinstallationActivation: after CI lookup', { resolvedRequestId });
+        } catch (err: any) {
+          // Propagar errores de duplicados u otros problemas
+          throw err;
+        }
+
+        // Si se proporcionó CI, no hacemos fallback por nombre: requerimos coincidencia por RUT
+        if (resolvedRequestId === undefined) {
+          throw Object.assign(new Error('No se encontró la InstallationRequest para el RUT proporcionado'), { statusCode: 404 });
+        }
+      } else {
+        // 2. Respaldo: Si no hay CI, buscar por nombre
+        if (clientName) {
+          resolvedRequestId = await this.findInstallationRequestIdByClientName(clientName);
+          logger.info('lookupPreinstallationActivation: after name lookup', { resolvedRequestId });
+        }
       }
     }
 
@@ -857,14 +867,24 @@ export class InstallationService extends GeonetBaseService {
     if (!cleanCi) return undefined;
 
     // Comparamos normalizando la columna de la BD a minúsculas y sin puntos/guiones
-    const req = await repo.createQueryBuilder('r')
-        .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) LIKE :ci', { ci: `%${cleanCi}%` })
-        .getOne();
+    // Usamos igualdad estricta para evitar falsos positivos
+    const matches = await repo.createQueryBuilder('r')
+        .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) = :ci', { ci: `${cleanCi}` })
+        .getMany();
 
-    if (req) logger.info('findInstallationRequestIdByClientCi: matched DB row', { id: req.id, dbCi: req.ci });
-    else logger.info('findInstallationRequestIdByClientCi: no match in DB', { cleanCi });
+    if (matches.length === 1) {
+      const req = matches[0];
+      logger.info('findInstallationRequestIdByClientCi: matched DB row', { id: req.id, dbCi: req.ci });
+      return req.id;
+    }
 
-    return req?.id;
+    if (matches.length > 1) {
+      logger.error('findInstallationRequestIdByClientCi: multiple rows matched same CI', { cleanCi, matches: matches.map(m => ({ id: m.id, ci: m.ci })) });
+      throw Object.assign(new Error('Se encontraron múltiples InstallationRequest con el mismo RUT'), { statusCode: 409 });
+    }
+
+    logger.info('findInstallationRequestIdByClientCi: no match in DB', { cleanCi });
+    return undefined;
   }
 
 private async submitGeonetActivation(params: {
