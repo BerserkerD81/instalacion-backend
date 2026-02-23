@@ -766,6 +766,12 @@ export class InstallationService extends GeonetBaseService {
     }
 
     if (resolvedRequestId === undefined || !resolvedRequest) {
+      logger.warn('lookupPreinstallationActivation: InstallationRequest no encontrada', {
+        resolvedRequestId,
+        resolvedRequestExists: Boolean(resolvedRequest),
+        client_ci,
+        clientName,
+      });
       throw Object.assign(new Error('No se encontró la InstallationRequest en la BD'), { statusCode: 404 });
     }
 
@@ -835,17 +841,23 @@ export class InstallationService extends GeonetBaseService {
     await this.ensureDataSource();
     const repo = AppDataSource.getRepository(InstallationRequest);
     
-    // 1. Limpiamos el RUT que llega desde n8n (quitamos puntos, guiones y espacios en blanco)
-    const cleanCi = clientCi.replace(/[\.\-\s]/g, '').toLowerCase().trim();
-    
+    // Extraemos un posible RUT dentro del texto (soporta formatos con o sin puntos y con o sin guión)
+    const input = String(clientCi || '').trim();
+    const rutMatch = input.match(/(\d{1,2}(?:\.\d{3}){1,2}-?[0-9kK])|(\d{7,8}-?[0-9kK])/);
+    const candidate = rutMatch ? rutMatch[0] : input;
+
+    // Limpiamos puntos, guiones y espacios, y forzamos minúsculas para la K
+    const cleanCi = candidate.replace(/[\.\-\s]/g, '').toLowerCase().trim();
+
+    logger.debug('findInstallationRequestIdByClientCi: candidate/cleaned', { candidate, cleanCi });
+
     if (!cleanCi) return undefined;
 
-    // 2. Buscamos en la BD usando REPLACE anidados para limpiar la columna 'ci' al vuelo.
-    // Esto asegura que si en la BD está como "19.123.456-7" y n8n manda "191234567", hagan match perfectamente.
+    // Comparamos normalizando la columna de la BD a minúsculas y sin puntos/guiones
     const req = await repo.createQueryBuilder('r')
-        .where('REPLACE(REPLACE(r.ci, ".", ""), "-", "") LIKE :ci', { ci: `%${cleanCi}%` })
+        .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) LIKE :ci', { ci: `%${cleanCi}%` })
         .getOne();
-        
+
     return req?.id;
   }
 

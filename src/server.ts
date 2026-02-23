@@ -80,9 +80,6 @@ async function runDailyTechSync() {
     console.error('Error running daily technician sync:', String(err));
   }
 }
-runDailyTechSync();
-setInterval(runDailyTechSync, 24 * 60 * 60 * 1000);
-
 // Iniciar Scheduler de importación de GeoNet
 startGeonetImportScheduler();
 
