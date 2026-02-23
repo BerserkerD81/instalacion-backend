@@ -75,6 +75,7 @@ export class InstallationController {
   public async lookupPreinstallation(req: Request, res: Response): Promise<Response> {
     try {
       const { clientName, technicianName, planName, installationRequestId, agreedInstallationDate } = req.body ?? {};
+      const client_ci = (req.body && (req.body.client_ci ?? req.body.ci ?? req.body.rut ?? req.body.RUT ?? req.body.clientCI)) ?? undefined;
       const comment = (req.body && (req.body.comments ?? req.body.comment ?? req.body.comentarios)) ?? undefined;
       if (!clientName || !technicianName) {
         return res
@@ -91,6 +92,7 @@ export class InstallationController {
       const result = await this.installationService.lookupPreinstallationActivation({
         clientName: String(clientName),
         technicianName: String(technicianName),
+        client_ci: client_ci !== undefined && client_ci !== null ? String(client_ci) : undefined,
         planName: planName !== undefined && planName !== null && String(planName).trim() !== ''
           ? String(planName)
           : undefined,
