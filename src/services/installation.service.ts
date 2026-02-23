@@ -736,28 +736,18 @@ export class InstallationService extends GeonetBaseService {
     let effectivePlanName = planName;
     let resolvedRequestId = installationRequestId;
     let resolvedRequest: InstallationRequest | null = null;
-
+    // Require either an explicit installationRequestId or a client_ci (RUT).
     if (resolvedRequestId === undefined) {
-      // 1. Prioridad: Si se proporciona RUT/CI, buscar únicamente por ese RUT (estricto)
-      if (client_ci) {
-        try {
-          resolvedRequestId = await this.findInstallationRequestIdByClientCi(client_ci);
-          logger.info('lookupPreinstallationActivation: after CI lookup', { resolvedRequestId });
-        } catch (err: any) {
-          // Propagar errores de duplicados u otros problemas
-          throw err;
-        }
+      if (!client_ci) {
+        throw Object.assign(new Error('client_ci es requerido'), { statusCode: 400 });
+      }
 
-        // Si se proporcionó CI, no hacemos fallback por nombre: requerimos coincidencia por RUT
-        if (resolvedRequestId === undefined) {
-          throw Object.assign(new Error('No se encontró la InstallationRequest para el RUT proporcionado'), { statusCode: 404 });
-        }
-      } else {
-        // 2. Respaldo: Si no hay CI, buscar por nombre
-        if (clientName) {
-          resolvedRequestId = await this.findInstallationRequestIdByClientName(clientName);
-          logger.info('lookupPreinstallationActivation: after name lookup', { resolvedRequestId });
-        }
+      // Buscar estrictamente por RUT/CI
+      resolvedRequestId = await this.findInstallationRequestIdByClientCi(client_ci);
+      logger.info('lookupPreinstallationActivation: after CI lookup', { resolvedRequestId });
+
+      if (resolvedRequestId === undefined) {
+        throw Object.assign(new Error('No se encontró la InstallationRequest para el RUT proporcionado'), { statusCode: 404 });
       }
     }
 
