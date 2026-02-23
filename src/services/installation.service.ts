@@ -1248,11 +1248,31 @@ public async crearTicket(params: GeonetTicketInput): Promise<any> {
           let effectiveStatus = res.status;
           if (res.status === 302 && res.headers.get('location')?.includes('/Instalaciones')) effectiveStatus = 200;
 
-          return { status: effectiveStatus, url: res.url };
+          // attempt to capture a small snippet of the response body for diagnostics
+          let bodySnippet = '';
+          try {
+            const txt = await res.text();
+            bodySnippet = txt ? txt.slice(0, 2000) : '';
+          } catch (e) {
+            bodySnippet = '';
+          }
+
+          return { status: effectiveStatus, url: res.url, bodySnippet };
         } catch (e: any) {
           return { status: 500, error: e.toString() };
         }
       }, { updates: updates || {}, url });
+
+      // If the edit failed, capture server-side page HTML snippet for debugging
+      if (!result || (typeof result.status === 'number' && result.status >= 400)) {
+        try {
+          const pageHtml = await page.content();
+          const snippet = pageHtml ? pageHtml.slice(0, 4000) : '';
+          logger.error(`[Puppeteer][editarInstalacionGeonet] edit failed for external=${externalIdOrUser} installation=${installationId} status=${result?.status} url=${result?.url} bodySnippet=${result?.bodySnippet || ''} pageHtmlSnippet=${snippet}`);
+        } catch (e: any) {
+          logger.error(`[Puppeteer][editarInstalacionGeonet] error capturing page content: ${e?.message}`);
+        }
+      }
 
       return { status: result.status, location: result.url };
     } finally {
