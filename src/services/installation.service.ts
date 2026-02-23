@@ -712,8 +712,10 @@ export class InstallationService extends GeonetBaseService {
   }
 
   // --- GEONET ACTIVACIÓN ---
+// --- GEONET ACTIVACIÓN ---
   public async lookupPreinstallationActivation(params: {
     clientName: string;
+    client_ci?: string; // <-- Nuevo parámetro agregado
     technicianName: string;
     planName?: string;
     installationRequestId?: number;
@@ -729,13 +731,21 @@ export class InstallationService extends GeonetBaseService {
     firstAvailableIp: string | null;
     activationPostStatus?: number;
   }> {
-    const { clientName, technicianName, planName, installationRequestId, agreedInstallationDate } = params;
+    const { clientName, client_ci, technicianName, planName, installationRequestId, agreedInstallationDate } = params;
     let effectivePlanName = planName;
     let resolvedRequestId = installationRequestId;
     let resolvedRequest: InstallationRequest | null = null;
 
     if (resolvedRequestId === undefined) {
-      resolvedRequestId = await this.findInstallationRequestIdByClientName(clientName);
+      // 1. Prioridad: Buscar por RUT/CI si viene en la petición (ignorando puntos y guiones)
+      if (client_ci) {
+        resolvedRequestId = await this.findInstallationRequestIdByClientCi(client_ci);
+      }
+      
+      // 2. Respaldo: Si no hay CI o no se encontró, buscar por nombre
+      if (resolvedRequestId === undefined && clientName) {
+        resolvedRequestId = await this.findInstallationRequestIdByClientName(clientName);
+      }
     }
 
     if (resolvedRequestId !== undefined) {
@@ -821,8 +831,25 @@ export class InstallationService extends GeonetBaseService {
       await page.close();
     }
   }
+  private async findInstallationRequestIdByClientCi(clientCi: string): Promise<number | undefined> {
+    await this.ensureDataSource();
+    const repo = AppDataSource.getRepository(InstallationRequest);
+    
+    // 1. Limpiamos el RUT que llega desde n8n (quitamos puntos, guiones y espacios en blanco)
+    const cleanCi = clientCi.replace(/[\.\-\s]/g, '').toLowerCase().trim();
+    
+    if (!cleanCi) return undefined;
 
-  private async submitGeonetActivation(params: {
+    // 2. Buscamos en la BD usando REPLACE anidados para limpiar la columna 'ci' al vuelo.
+    // Esto asegura que si en la BD está como "19.123.456-7" y n8n manda "191234567", hagan match perfectamente.
+    const req = await repo.createQueryBuilder('r')
+        .where('REPLACE(REPLACE(r.ci, ".", ""), "-", "") LIKE :ci', { ci: `%${cleanCi}%` })
+        .getOne();
+        
+    return req?.id;
+  }
+
+private async submitGeonetActivation(params: {
     page: Page;
     activationLink: string;
     technicianId: string;
@@ -967,7 +994,16 @@ export class InstallationService extends GeonetBaseService {
     const externalIdBase = activationId ? `${activationId}_${firstNameSlug}` : `${request.id}_${firstNameSlug}`;
     const ciNormalized = this.normalizeCedula(request.ci || '');
     const phoneValue = request.additionalPhone ? `${request.phone || ''},${request.additionalPhone}` : `${request.phone || ''}`;
-    const commentsToSend = params.comments !== undefined && params.comments !== null ? String(params.comments) : (request.comments || '');
+    
+    // --- LÓGICA DE COMENTARIOS COMBINADOS ---
+    const baseComments = request.comments || '';
+    const incomingComments = params.comments !== undefined && params.comments !== null ? String(params.comments).trim() : '';
+
+    // Si llegan comentarios nuevos, los une con los antiguos. Si no, deja los antiguos.
+    const commentsToSend = incomingComments 
+        ? `${baseComments}\n\n[Nota Bot]: ${incomingComments}`.trim() 
+        : baseComments;
+    // ----------------------------------------
 
     const result = await page.evaluate(async (args) => {
       try {
