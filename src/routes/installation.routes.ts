@@ -57,9 +57,9 @@ router.get('/wisphub/tickets/search', (req, res) => installationController.busca
 // Wisphub: list staff users (supports limit & offset)
 router.get('/wisphub/staff', (req, res) => installationController.listarStaffWisphub(req, res));
 
-// Wisphub: edit ticket (partial update). Supports optional file field `archivo_ticket`.
+// Geonet: edit ticket (partial update). Supports optional file field `archivo_ticket`.
 router.patch(
-	'/wisphub/tickets/:ticketId',
+	'/geonet/tickets/:ticketId',
 	upload.single('archivo_ticket'),
 	(req, res) => installationController.editarTicketGeonet(req, res)
 );
