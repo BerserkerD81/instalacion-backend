@@ -1219,11 +1219,12 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
       const url = `${GEONET_BASE_URL}/Instalaciones/editar/${encodeURIComponent(externalIdOrUser)}/${encodeURIComponent(installationId)}/`;
-      // Esperamos directamente por el formulario que muestra tu HTML
+      // Esperamos directamente por el formulario que muestra el HTML de Geonet
       await this.safeGoto(page, url, { waitForSelector: 'form#agregar-cliente' });
 
-      // 1. Diccionario de mapeo estricto (Evita sobrescribir campos equivocados)
       const resolvedUpdates: Record<string, string> = {};
+      
+      // 1. Ampliamos el mapeo estricto para atrapar los campos enviados desde n8n
       const fieldMap: Record<string, string> = {
         firstName: 'usr-first_name',
         lastName: 'usr-last_name',
@@ -1240,19 +1241,36 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         externalId: 'perfil-external_id',
         costo: 'cliente-costo_instalacion',
         clienteRb: 'cliente-cliente_rb',
+        // Mapeo de Fechas (Soporta múltiples variables desde n8n):
+        fechaInstalacion: 'cliente-fecha_instalacion',
+        fecha_instalacion: 'cliente-fecha_instalacion',
+        agreedInstallationDate: 'cliente-fecha_instalacion',
       };
 
-      // Mapeamos los campos de texto plano
+      // Mapeamos los campos de texto plano (excluyendo los que necesitan IDs como selects)
+      const specialKeys = ['routerName', 'zonaName', 'apName', 'planName', 'technicianName', 'tecnico', 'tecnicoName', 'comments', 'comentarios'];
       for (const [key, value] of Object.entries(updates)) {
         if (value === undefined || value === null) continue;
-        // Excluimos las llaves que requieren resolución especial o de texto enriquecido
-        if (['routerName', 'zonaName', 'apName', 'planName', 'technicianName', 'comments', 'comentarios'].includes(key)) continue;
+        if (specialKeys.includes(key)) continue;
 
         const formKey = fieldMap[key] || key;
         resolvedUpdates[formKey] = String(value);
       }
 
       // 2. Resolución de Selectores (Texto legible -> Value/ID del HTML)
+      
+      // Capturamos el técnico sin importar cómo lo envíe n8n
+      const techInput = updates.technicianName || updates.tecnico || updates.tecnicoName;
+      if (techInput) {
+        const opts = await this.extractSelectOptions(page, '#id_cliente-tecnico');
+        const id = this.findOptionIdObj(opts, String(techInput));
+        if (id) {
+            resolvedUpdates['cliente-tecnico'] = id;
+        } else {
+            logger.warn(`[editarInstalacionGeonet] Técnico '${techInput}' no encontrado. Se mantendrá el actual.`);
+        }
+      }
+
       if (updates.routerName) {
         const opts = await this.extractSelectOptions(page, '#id_cliente-router_cliente');
         const id = this.findOptionIdObj(opts, String(updates.routerName));
@@ -1279,15 +1297,9 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
         if (id) resolvedUpdates['cliente-plan_internet'] = id;
       }
 
-      if (updates.technicianName) {
-        const opts = await this.extractSelectOptions(page, '#id_cliente-tecnico');
-        const id = this.findOptionIdObj(opts, String(updates.technicianName));
-        if (id) resolvedUpdates['cliente-tecnico'] = id;
-      }
-
       const newComments = updates.comments || updates.comentarios;
 
-      // 3. Ejecutar actualización de FormData dentro del contexto de la página
+      // 3. Ejecutar actualización de FormData dentro de Puppeteer
       const result = await page.evaluate(async (args) => {
         try {
           const formEl = document.querySelector('form#agregar-cliente') as HTMLFormElement;
@@ -1299,7 +1311,7 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
           const csrf = (document.querySelector('input[name="csrfmiddlewaretoken"]') as HTMLInputElement)?.value || '';
           formData.set('csrfmiddlewaretoken', csrf);
 
-          // Anexar comentarios sin borrar los anteriores en el CKEditor
+          // Anexar comentarios de manera segura sin borrar los anteriores
           if (args.newComments) {
             let existingComments = '';
             if ((window as any).CKEDITOR && (window as any).CKEDITOR.instances['id_cliente-comentarios']) {
@@ -1317,37 +1329,43 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
             }
           }
 
-          // Aplicar la data mapeada
+          // APLICAR CAMBIOS
+          // Inyectamos forzosamente los valores mapeados al FormData
           const recordUpdates = args.resolvedUpdates as Record<string, string>;
           for (const [key, value] of Object.entries(recordUpdates)) {
-              if (formData.has(key)) {
-                formData.set(key, value);
-              }
+             formData.set(key, value);
           }
 
           // Enviar la petición simulando el "submit" original
           const res = await fetch(args.url, { method: 'POST', body: formData });
           let effectiveStatus = res.status;
 
-          // Backend Django: Si es válido, redirecciona. Si falla validación, devuelve código 200 pero no redirecciona
+          // Backend Django: Si es válido, redirecciona. Si falla validación, devuelve 200 pero NO redirecciona.
           if (res.redirected && (res.url.includes('/Instalaciones') || res.url.includes('/clientes'))) {
             effectiveStatus = 200;
           } else if (!res.redirected && res.url.includes('/editar/')) {
-            effectiveStatus = 422; 
+            effectiveStatus = 422; // Unprocessable Entity
           }
 
-          // Parsear errores específicos arrojados por Django
+          // Parsear errores específicos arrojados por Django en la vista HTML
           let errorMessages: string[] = [];
           if (effectiveStatus === 422) {
               const htmlText = await res.text();
               const parser = new DOMParser();
               const doc = parser.parseFromString(htmlText, 'text/html');
-              // Buscar las clases de error en el DOM de la respuesta fallida
               const alerts = Array.from(doc.querySelectorAll('.alert-danger, .errorlist, .text-danger, .help-block'));
               errorMessages = alerts.map(a => a.textContent?.trim() || '').filter(Boolean);
           }
 
-          return { status: effectiveStatus, url: res.url, errors: errorMessages };
+          // Devolver el Payload final para depuración
+          const finalPayload = Object.fromEntries(formData.entries());
+
+          return { 
+            status: effectiveStatus, 
+            url: res.url, 
+            errors: errorMessages,
+            debugPayload: finalPayload 
+          };
 
         } catch (e: any) {
           return { status: 500, error: e.toString() };
@@ -1355,15 +1373,17 @@ public async editarInstalacionGeonet(params: { externalIdOrUser: string; install
       }, { resolvedUpdates, newComments, url });
 
       if (!result || result.status >= 400) {
-        logger.warn(`[Puppeteer][editarInstalacionGeonet] Edición rechazada. status=${result?.status}, errores=${JSON.stringify(result?.errors)}`);
+        logger.warn(`[Puppeteer][editarInstalacionGeonet] Edición rechazada. extId=${externalIdOrUser} status=${result?.status}, errores=${JSON.stringify(result?.errors)}`);
       } else {
-        logger.info(`[Puppeteer][editarInstalacionGeonet] Instalación editada con éxito. extId=${externalIdOrUser}`);
+        logger.info(`[Puppeteer][editarInstalacionGeonet] Éxito. extId=${externalIdOrUser}. Datos inyectados: ${JSON.stringify(resolvedUpdates)}`);
       }
 
       return { 
         status: result.status, 
         location: result.url, 
-        formErrors: result.errors || [] 
+        formErrors: result.errors || [],
+        appliedUpdates: resolvedUpdates, // Retorna los cambios mapeados para verlos en n8n
+        debugPayload: result.debugPayload // Retorna el payload final que leyó Django
       };
 
     } finally {
