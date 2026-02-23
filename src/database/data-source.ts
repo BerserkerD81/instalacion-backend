@@ -30,7 +30,8 @@ export async function initializeDataSource(): Promise<void> {
     try {
       attempt += 1;
       await AppDataSource.initialize();
-      logger.info(`Database connected after ${attempt} attempt(s)`);
+      const opts: any = AppDataSource.options || {};
+      logger.info(`Database connected after ${attempt} attempt(s)`, { host: opts.host, database: opts.database });
       return;
     } catch (err) {
       const isLastAttempt = attempt >= DEFAULT_RETRY_ATTEMPTS;

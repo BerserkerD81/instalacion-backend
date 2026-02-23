@@ -5,7 +5,9 @@ const logger = createLogger({
   format: format.combine(
     format.timestamp(),
     format.printf((info) => {
-      return `${info.timestamp} [${info.level}]: ${info.message}`;
+      const { timestamp, level, message, ...meta } = info as any;
+      const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
+      return `${timestamp} [${level}]: ${message}${metaStr}`;
     })
   ),
   transports: [

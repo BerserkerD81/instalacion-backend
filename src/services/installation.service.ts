@@ -861,6 +861,9 @@ export class InstallationService extends GeonetBaseService {
         .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) LIKE :ci', { ci: `%${cleanCi}%` })
         .getOne();
 
+    if (req) logger.info('findInstallationRequestIdByClientCi: matched DB row', { id: req.id, dbCi: req.ci });
+    else logger.info('findInstallationRequestIdByClientCi: no match in DB', { cleanCi });
+
     return req?.id;
   }
 
