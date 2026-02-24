@@ -66,8 +66,8 @@ export class InstallationRequest {
   plan!: string | null;
 
   // Campos adicionales para confirmación del técnico
-  @Column({ type: 'boolean' })
-  confirmedByTechnician!: boolean;
+  @Column({ type: 'boolean', nullable: true, default: false })
+  confirmedByTechnician!: boolean | null;
 
   @Column({ nullable: true, type: 'datetime' })
   agreedInstallationDate!: Date | null;
