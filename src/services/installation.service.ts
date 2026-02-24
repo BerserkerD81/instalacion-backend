@@ -1,6 +1,6 @@
 import AppDataSource, { initializeDataSource } from '../database/data-source';
 import { InstallationRequest } from '../entities/InstallationRequest';
-import { Technician } from '../entities/Technician';
+import { SmartoltOnuDetail } from 'entities/SmartOltDetail';
 import { SectorialNode } from '../entities/SectorialNode';
 import { FileService } from './file.service';
 import { DeepPartial, In, Not } from 'typeorm';
@@ -1007,29 +1007,57 @@ export class InstallationService extends GeonetBaseService {
       return false;
     }, { timeout: 4000 }).catch(() => null); 
 
-    // Extraemos la nueva IP actualizada
-    const finalIp = await page.evaluate(() => {
-      const ipNode = document.querySelector('#popover-ips-disponibles ul li a');
-      if (ipNode && ipNode.textContent) {
-        const match = ipNode.textContent.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
-        if (match) return match[0];
-      }
-      
+// 1. Extraemos TODAS las IPs disponibles en la UI
+    const availableIps = await page.evaluate(() => {
+      const ips = new Set<string>();
+
+      // Extraer del popover (lista de IPs)
+      const popoverNodes = document.querySelectorAll('#popover-ips-disponibles ul li a');
+      popoverNodes.forEach(node => {
+        const match = node.textContent?.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+        if (match) ips.add(match[0]);
+      });
+
+      // Extraer del input como respaldo
       const ipInput = document.querySelector('input[name*="ip" i]') as HTMLInputElement;
       if (ipInput && ipInput.value) {
         const match = ipInput.value.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
-        if (match) return match[0];
+        if (match) ips.add(match[0]);
       }
 
-      const textContentMatches = document.body.textContent?.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-      return textContentMatches[0] || null;
+      // Respaldo extremo: buscar en el texto de la página
+      if (ips.size === 0) {
+        const textContentMatches = document.body.textContent?.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+        textContentMatches.forEach(ip => ips.add(ip));
+      }
+
+      return Array.from(ips);
     });
 
-    if (!finalIp) {
-      throw Object.assign(new Error('No se encontró una IP disponible tras seleccionar la zona/router'), { statusCode: 404 });
+    if (!availableIps || availableIps.length === 0) {
+      throw Object.assign(new Error('No se encontraron IPs disponibles en la UI tras seleccionar la zona/router'), { statusCode: 404 });
     }
-    logger.info(`[Puppeteer] IP obtenida tras actualización: ${finalIp}`);
-    // ==============================================================================
+
+    logger.info(`[Puppeteer] IPs detectadas en UI: ${availableIps.join(', ')}`);
+
+    // 2. Consultar la tabla SmartoltOnuDetail para ver cuáles están en uso
+    const smartoltRepo = AppDataSource.getRepository(SmartoltOnuDetail);
+    const usedIpsRecords = await smartoltRepo.find({
+      where: { ipAddress: In(availableIps) },
+      select: ['ipAddress'] // Solo traemos la columna necesaria para optimizar
+    });
+
+    const usedIpsSet = new Set(usedIpsRecords.map(record => record.ipAddress));
+
+    // 3. Seleccionar la primera IP que NO esté en la tabla
+    const finalIp = availableIps.find(ip => !usedIpsSet.has(ip));
+
+    if (!finalIp) {
+      logger.error(`[Puppeteer] Colisión total: Las IPs (${availableIps.join(', ')}) ya existen en SmartoltOnuDetail.`);
+      throw Object.assign(new Error('Todas las IPs disponibles en Geonet ya se encuentran registradas en SmartOLT'), { statusCode: 409 });
+    }
+
+    logger.info(`[Puppeteer] IP validada y seleccionada exitosamente: ${finalIp}`); // ==============================================================================
 
     const fullName = `${request.firstName || ''} ${request.lastName || ''}`.trim();
     const activationId = this.getActivationIdFromUrl(activationLink);

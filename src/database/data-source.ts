@@ -3,6 +3,8 @@ import { InstallationRequest } from '../entities/InstallationRequest';
 import { Technician } from '../entities/Technician';
 import { Agenda } from '../entities/Agenda';
 import { SectorialNode } from '../entities/SectorialNode';
+import { SmartoltOnuDetail } from '../entities/SmartOltDetail';
+import { SmartoltOnuSnapshot } from '../entities/SmartoltOnuSnapshot';
 import logger from '../utils/logger';
 
 const AppDataSource = new DataSource({
@@ -14,7 +16,7 @@ const AppDataSource = new DataSource({
   database: process.env.DB_NAME,
   synchronize: true,
   logging: false,
-  entities: [InstallationRequest, Technician, Agenda, SectorialNode],
+  entities: [InstallationRequest, Technician, Agenda, SectorialNode, SmartoltOnuDetail, SmartoltOnuSnapshot],
   migrations: [],
   subscribers: [],
 });

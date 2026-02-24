@@ -9,6 +9,7 @@ import errorHandler from './middlewares/errorHandler';
 import { appConfig } from './config';
 import { TechnicianService } from './services/technician.service';
 import { startGeonetImportScheduler } from './services/geonetImportScheduler';
+import { scheduleSmartoltOnuSnapshots } from './services/smartOlt';
 
 const app = express();
 const technicianService = new TechnicianService();
@@ -82,6 +83,7 @@ async function runDailyTechSync() {
 }
 // Iniciar Scheduler de importación de GeoNet
 startGeonetImportScheduler();
+scheduleSmartoltOnuSnapshots();
 
 // ==========================================
 // INICIO DEL SERVIDOR

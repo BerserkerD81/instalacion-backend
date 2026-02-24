@@ -8,6 +8,27 @@ type CacheEntry = {
   expires: number;
   pending?: Promise<any>;
 };
+export type SmartOltOnuDetails = {
+  sn?: string;
+  serial?: string;
+  onu_sn?: string;
+  mac?: string;
+  mac_address?: string;
+  pon_type?: string;
+  olt_id?: string | number;
+  board?: string | number;
+  slot?: string | number;
+  port?: string | number;
+  port_id?: string | number;
+  name?: string;
+  onu_type?: string;
+  unique_external_id?: string | number;
+  onu_external_id?: string | number;
+  external_id?: string | number;
+  onu_id?: string | number;
+  id?: string | number;
+  [key: string]: any;
+};
 
 const smartoltCache = new Map<string, CacheEntry>();
 
@@ -40,7 +61,31 @@ function getHeaders() {
     'X-Token': SMARTOLT.apiKey
   };
 }
+export async function getAllOnusDetailsRaw(): Promise<any> {
+  let data = await getWithPostFallback<any>(`/api/onu/get_all_onus_details`);
+  try {
+    if (typeof data === 'string') {
+      try {
+        data = JSON.parse(data);
+      } catch (e) {
+      }
+    }
+  } catch (e) {
+  }
+  return data;
+}
 
+export async function getAllOnusDetails(): Promise<SmartOltOnuDetails[]> {
+  const data = await getAllOnusDetailsRaw();
+  const list = Array.isArray((data as any)?.response)
+    ? (data as any).response
+    : Array.isArray((data as any)?.data)
+      ? (data as any).data
+      : Array.isArray(data)
+        ? data
+        : [];
+  return (list || []) as SmartOltOnuDetails[];
+}
 // Perform SmartOLT web login to get a session cookie when API key access is forbidden
 async function getSmartoltSessionCookie(force?: boolean): Promise<string | null> {
   const identity = process.env.SMARTOLT_IDENTITY || process.env.SMARTOLT_USERNAME || process.env.SMARTOLT_EMAIL;
