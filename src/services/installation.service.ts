@@ -1,6 +1,6 @@
 import AppDataSource, { initializeDataSource } from '../database/data-source';
 import { InstallationRequest } from '../entities/InstallationRequest';
-import { SmartoltOnuDetail } from 'entities/SmartOltDetail';
+import { SmartoltOnuDetail } from '../entities/SmartOltDetail';
 import { SectorialNode } from '../entities/SectorialNode';
 import { FileService } from './file.service';
 import { DeepPartial, In, Not } from 'typeorm';

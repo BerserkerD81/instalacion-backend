@@ -11,6 +11,9 @@ import { TechnicianService } from './services/technician.service';
 import { startGeonetImportScheduler } from './services/geonetImportScheduler';
 import { scheduleSmartoltOnuSnapshots } from './services/smartOlt';
 
+// 👇 AÑADE ESTA IMPORTACIÓN (Ajusta la ruta según dónde esté tu AppDataSource)
+import { initializeDataSource } from './database/data-source'; // o './data-source', etc.
+
 const app = express();
 const technicianService = new TechnicianService();
 
@@ -81,18 +84,33 @@ async function runDailyTechSync() {
     console.error('Error running daily technician sync:', String(err));
   }
 }
-// Iniciar Scheduler de importación de GeoNet
-startGeonetImportScheduler();
-scheduleSmartoltOnuSnapshots();
 
 // ==========================================
-// INICIO DEL SERVIDOR
+// BOOTSTRAP E INICIO DEL SERVIDOR
 // ==========================================
 const PORT = appConfig.port || 3000;
-const startServer = () => {
-  app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
-  });
+
+const startServer = async () => {
+  try {
+    // 1. INICIAR BASE DE DATOS PRIMERO
+    console.log('Conectando a la base de datos...');
+    await initializeDataSource();
+    console.log('✅ Base de datos inicializada correctamente.');
+
+    // 2. INICIAR SCHEDULERS (Solo cuando la BD ya está lista)
+    console.log('Iniciando tareas programadas (Schedulers)...');
+    startGeonetImportScheduler();
+    scheduleSmartoltOnuSnapshots();
+
+    // 3. LEVANTAR EXPRESS
+    app.listen(PORT, () => {
+      console.log(`✅ Server is running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    // Si la BD falla y agota sus reintentos, detenemos el proceso
+    console.error('❌ ERROR CRÍTICO: No se pudo iniciar la aplicación:', error);
+    process.exit(1); 
+  }
 };
 
 startServer();
