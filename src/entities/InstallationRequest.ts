@@ -20,19 +20,19 @@ export class InstallationRequest {
   @Column()
   address!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 255, nullable: true })
   coordinates!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 100, nullable: true })
   neighborhood!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 100, nullable: true })
   city!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 20, nullable: true })
   postalCode!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   phone!: string | null;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
@@ -44,10 +44,10 @@ export class InstallationRequest {
   @Column('simple-array', { nullable: true })
   installationDates!: string[] | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   timeFrom!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   timeTo!: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
