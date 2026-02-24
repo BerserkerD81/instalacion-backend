@@ -11,7 +11,6 @@ export class InstallationRequest {
   @Column()
   lastName!: string;
 
-  @Column()
   @Column({ unique: true })
   ci!: string;
 
@@ -21,20 +20,20 @@ export class InstallationRequest {
   @Column()
   address!: string;
 
-  @Column()
-  coordinates!: string;
+  @Column({ nullable: true })
+  coordinates!: string | null;
 
-  @Column()
-  neighborhood!: string;
+  @Column({ nullable: true })
+  neighborhood!: string | null;
 
-  @Column()
-  city!: string;
+  @Column({ nullable: true })
+  city!: string | null;
 
-  @Column()
-  postalCode!: string;
+  @Column({ nullable: true })
+  postalCode!: string | null;
 
-  @Column()
-  phone!: string;
+  @Column({ nullable: true })
+  phone!: string | null;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   additionalPhone!: string | null;
@@ -42,14 +41,14 @@ export class InstallationRequest {
   @Column('text')
   comments!: string;
 
-  @Column('simple-array')
-  installationDates!: string[];
+  @Column('simple-array', { nullable: true })
+  installationDates!: string[] | null;
 
-  @Column()
-  timeFrom!: string;
+  @Column({ nullable: true })
+  timeFrom!: string | null;
 
-  @Column()
-  timeTo!: string;
+  @Column({ nullable: true })
+  timeTo!: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   idFront!: string | null;
@@ -67,8 +66,8 @@ export class InstallationRequest {
   plan!: string | null;
 
   // Campos adicionales para confirmación del técnico
-  @Column({ type: 'boolean', nullable: true })
-  confirmedByTechnician!: boolean | null;
+  @Column({ type: 'boolean' })
+  confirmedByTechnician!: boolean;
 
   @Column({ nullable: true, type: 'datetime' })
   agreedInstallationDate!: Date | null;
