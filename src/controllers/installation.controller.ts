@@ -13,39 +13,68 @@ export class InstallationController {
     this.fileService = new FileService();
   }
 
-public async createInstallationRequest(req: Request, res: Response): Promise<Response> {
+  private async sendWebhook(url: string, payload: any): Promise<void> {
+    try {
+      await axios.post(url, payload, { timeout: 5000 });
+      logger.info(`Webhook POST to ${url} succeeded`);
+    } catch (err: any) {
+      logger.error(`Error sending webhook to ${url}: ${String(err && err.message ? err.message : err)}`);
+    }
+  }
+
+  public async createInstallationRequest(req: Request, res: Response): Promise<Response> {
     try {
       const data = req.body;
 
-      // ... (Toda tu lógica de normalización de fechas y archivos se mantiene igual) ...
-
-      // 2. Aquí es donde se guarda en la DB
-      const installationRequest = await this.installationService.createRequest(data);
-
-      // 3. ¡EL DISPARADOR PARA n8n!
-      // Lo envolvemos en un try-catch independiente para que, si n8n falla, 
-      // el cliente igual reciba su confirmación de que se guardó en la DB.
-      try {
-        const n8nWebhookUrl = 'https://n8n.geonet.cl/webhook/bb124651-cec5-423d-a05f-a3a1d04f38d3';
-        
-        // Enviamos los datos mínimos necesarios que n8n usará para re-consultar
-        axios.post(n8nWebhookUrl, {
-          id_db_interna: installationRequest.id, // El ID que acaba de generar la DB
-          cedula: installationRequest.ci ,
-          sistema_origen: 'API-Backend'
-        });
-        
-        logger.info(`Notificación enviada a n8n para el cliente: ${installationRequest.ci}`);
-      } catch (webhookError) {
-        logger.error(`Error enviando notificación a n8n: ${webhookError}`);
-        // No lanzamos el error para no interrumpir la respuesta al usuario
+      // Normalizar arrays que llegan como string en form-data
+      if (typeof data.installationDates === 'string') {
+        try {
+          // soporta JSON stringified array o CSV
+          const trimmed = data.installationDates.trim();
+          data.installationDates = trimmed.startsWith('[')
+            ? JSON.parse(trimmed)
+            : trimmed.split(',').map((s: string) => s.trim()).filter(Boolean);
+        } catch {
+          data.installationDates = data.installationDates
+            .split(',')
+            .map((s: string) => s.trim())
+            .filter(Boolean);
+        }
       }
 
-      return res.status(201).json(installationRequest);
+      // Procesar archivos si existen: guardar buffers en disco y pasar filename
+      if (req.files) {
+        const files = req.files as any;
+        if (files.idFront && files.idFront[0]) {
+          data.idFront = this.fileService.saveFile(files.idFront[0].buffer, files.idFront[0].originalname || 'idFront.jpg');
+        }
+        if (files.idBack && files.idBack[0]) {
+          data.idBack = this.fileService.saveFile(files.idBack[0].buffer, files.idBack[0].originalname || 'idBack.jpg');
+        }
+        if (files.addressProof && files.addressProof[0]) {
+          data.addressProof = this.fileService.saveFile(files.addressProof[0].buffer, files.addressProof[0].originalname || 'addressProof.jpg');
+        }
+        if (files.coupon && files.coupon[0]) {
+          data.coupon = this.fileService.saveFile(files.coupon[0].buffer, files.coupon[0].originalname || 'coupon.jpg');
+        }
+      }
 
+      const installationRequest = await this.installationService.createRequest(data);
+
+      // Notify n8n webhook with the created installation id (fire-and-forget)
+      void this.sendWebhook(
+        'https://n8n.geonet.cl/webhook/bb124651-cec5-423d-a05f-a3a1d04f38d3',
+        { installationId: installationRequest.id },
+      );
+
+      return res.status(201).json(installationRequest);
     } catch (error: any) {
-      // ... (Tu manejo de errores existente) ...
       logger.error(`Error creating installation request: ${String(error)}`);
+      if (error.isWisphubError) {
+        const status = error.status || 400;
+        // forward Wisphub response body to client
+        return res.status(status).json(error.data);
+      }
       return res.status(500).json({ message: 'Error creating installation request' });
     }
   }
