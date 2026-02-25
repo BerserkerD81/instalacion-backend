@@ -29,7 +29,6 @@ export class InstallationController {
       // Normalizar arrays que llegan como string en form-data
       if (typeof data.installationDates === 'string') {
         try {
-          // soporta JSON stringified array o CSV
           const trimmed = data.installationDates.trim();
           data.installationDates = trimmed.startsWith('[')
             ? JSON.parse(trimmed)
@@ -43,6 +42,7 @@ export class InstallationController {
       }
 
       // Procesar archivos si existen: guardar buffers en disco y pasar filename
+      // Las imágenes NO son obligatorias, si no vienen, se usarán fake images en el service
       if (req.files) {
         const files = req.files as any;
         if (files.idFront && files.idFront[0]) {
@@ -59,6 +59,7 @@ export class InstallationController {
         }
       }
 
+      // No es necesario validar que vengan imágenes, el service generará fake images si faltan
       const installationRequest = await this.installationService.createRequest(data);
 
       // Notify n8n webhook with the created installation id (fire-and-forget)
@@ -72,7 +73,6 @@ export class InstallationController {
       logger.error(`Error creating installation request: ${String(error)}`);
       if (error.isWisphubError) {
         const status = error.status || 400;
-        // forward Wisphub response body to client
         return res.status(status).json(error.data);
       }
       return res.status(500).json({ message: 'Error creating installation request' });
@@ -253,8 +253,6 @@ export class InstallationController {
       return res.status(statusCode).json({ message: error.message || 'Error editando ticket en Geonet', data: error.data });
     }
   }
-
-
 
   public async buscarTicketWisphubPorCliente(req: Request, res: Response): Promise<Response> {
     try {
