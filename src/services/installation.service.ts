@@ -1471,10 +1471,13 @@ public async createRequest(data: InstallationRequestInput): Promise<Installation
 
   try {
     // Enviar a Wisphub con el payload que incluye rutas a imágenes falsas o reales
-    const wisphubResult = await this.notifyWisphub(wisphubPayload as any);
-    if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 400)) {
-      throw new Error('Wisphub error');
-    }
+// ...existing code...
+const wisphubResult = await this.notifyWisphub(wisphubPayload as any);
+if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 400)) {
+  logger.error('Wisphub response:', wisphubResult); // <-- Agrega este log
+  throw new Error('Wisphub error');
+}
+// ...existing code...
 
     // Guardar en BD con los datos originales (sin las rutas falsas)
     const saved = await repo.save(repo.create(data as any) as any);
