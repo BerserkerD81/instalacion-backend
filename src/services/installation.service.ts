@@ -13,6 +13,7 @@ import logger from '../utils/logger';
 import { wisphubConfig } from '../config';
 import sharp from 'sharp'; // o import sharp from 'sharp';
 import * as path from 'path';
+import jpeg from 'jpeg-js';
 
 // =========================================================================
 // VARIABLES GLOBALES Y CONFIGURACIÓN (Compartidas por todos los servicios)
@@ -1471,13 +1472,11 @@ public async createRequest(data: InstallationRequestInput): Promise<Installation
 
   try {
     // Enviar a Wisphub con el payload que incluye rutas a imágenes falsas o reales
-// ...existing code...
-const wisphubResult = await this.notifyWisphub(wisphubPayload as any);
-if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 400)) {
-  logger.error('Wisphub response:', wisphubResult); // <-- Agrega este log
-  throw new Error('Wisphub error');
-}
-// ...existing code...
+    const wisphubResult = await this.notifyWisphub(wisphubPayload as any);
+    if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 400)) {
+      logger.error('Wisphub response:', wisphubResult); // <-- Agrega este log
+      throw new Error('Wisphub error');
+    }
 
     // Guardar en BD con los datos originales (sin las rutas falsas)
     const saved = await repo.save(repo.create(data as any) as any);
@@ -1495,21 +1494,16 @@ if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 
 }
 
 private async generateFakeImage(fieldName: string): Promise<Buffer> {
-  // Crear una imagen de 200x150 con un color de fondo y texto indicando el campo
-  const width = 200;
-  const height = 150;
-  const bgColor = { r: 200, g: 200, b: 200 }; // gris claro
-  const text = fieldName; // o algún texto
-
-  // Usar sharp para crear un SVG con texto y convertirlo a PNG
-  const svgImage = `
-    <svg width="${width}" height="${height}">
-      <rect width="100%" height="100%" fill="rgb(${bgColor.r},${bgColor.g},${bgColor.b})" />
-      <text x="10" y="20" font-size="12" fill="black">${text}</text>
-    </svg>
-  `;
-
-  return await sharp(Buffer.from(svgImage)).png().toBuffer();
+  // Crea una imagen RGB 100x50 blanca
+  const width = 100, height = 50;
+  const frameData = Buffer.alloc(width * height * 4, 0xFF); // RGBA blanco
+  const rawImageData = {
+    data: frameData,
+    width,
+    height,
+  };
+  const jpegImageData = jpeg.encode(rawImageData, 80); // calidad 80
+  return jpegImageData.data;
 }
 
   private appendFile(form: FormData, field: string, fileName: string | null): void {
