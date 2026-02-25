@@ -27,6 +27,7 @@
     "puppeteer-core": "^24.37.5",
     "puppeteer-extra": "^3.3.4",
     "puppeteer-extra-plugin-stealth": "^2.11.1",
+    "sharp": "^0.34.5",
     "tough-cookie": "^6.0.0",
     "typeorm": "^0.3.28",
     "uuid": "^13.0.0",

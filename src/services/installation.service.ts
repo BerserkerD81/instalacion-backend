@@ -11,6 +11,8 @@ import * as cheerio from 'cheerio';
 import puppeteer, { Browser, Page } from 'puppeteer-core';
 import logger from '../utils/logger';
 import { wisphubConfig } from '../config';
+import sharp from 'sharp'; // o import sharp from 'sharp';
+import * as path from 'path';
 
 // =========================================================================
 // VARIABLES GLOBALES Y CONFIGURACIÓN (Compartidas por todos los servicios)
@@ -30,6 +32,7 @@ type InstallationRequestInput = DeepPartial<InstallationRequest> & {
   idBack?: Buffer | string | null;
   addressProof?: Buffer | string | null;
   coupon?: Buffer | string | null;
+  [key: string]: any; // Index signature to allow string indexing
 };
 
 type GeonetTicketInput = {
@@ -1442,15 +1445,69 @@ export class InstallationService extends GeonetBaseService {
     return { status: response.status, data: response.data };
   }
 
-  public async createRequest(data: InstallationRequestInput): Promise<InstallationRequest> {
-    await this.ensureDataSource();
-    const repo = AppDataSource.getRepository(InstallationRequest);
-    const wisphubResult = await this.notifyWisphub(data as any);
+public async createRequest(data: InstallationRequestInput): Promise<InstallationRequest> {
+  await this.ensureDataSource();
+  const repo = AppDataSource.getRepository(InstallationRequest);
+
+  // --- Generar imágenes falsas para campos faltantes ---
+  const imageFields = ['idFront', 'idBack', 'addressProof', 'coupon'];
+  const fakeImagePaths: string[] = [];
+
+  // Crear una copia del data para el payload de Wisphub
+  const wisphubPayload = { ...data };
+
+  for (const field of imageFields) {
+    if (!data[field]) { // Si no hay imagen real
+      // Generar una imagen falsa
+      const fakeBuffer = await this.generateFakeImage(field); // método que genera buffer
+      // Guardar temporalmente y obtener la ruta
+      const fakeFilename = `fake_${field}_${Date.now()}.jpg`;
+      const fakePath = this.fileService.saveFile(fakeBuffer, fakeFilename); // asumo que saveFile guarda y retorna la ruta/nombre
+      // Asignar al payload
+      wisphubPayload[field] = fakePath;
+      fakeImagePaths.push(fakePath);
+    }
+  }
+
+  try {
+    // Enviar a Wisphub con el payload que incluye rutas a imágenes falsas o reales
+    const wisphubResult = await this.notifyWisphub(wisphubPayload as any);
     if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 400)) {
       throw new Error('Wisphub error');
     }
-    return repo.save(repo.create(data as any) as any);
+
+    // Guardar en BD con los datos originales (sin las rutas falsas)
+    const saved = await repo.save(repo.create(data as any) as any);
+    return saved;
+  } finally {
+    // Limpiar archivos falsos después de enviar (si ya no son necesarios)
+    await Promise.all(fakeImagePaths.map(async (p) => {
+      try {
+        await fs.promises.unlink(p);
+      } catch (e) {
+        // ignorar error
+      }
+    }));
   }
+}
+
+private async generateFakeImage(fieldName: string): Promise<Buffer> {
+  // Crear una imagen de 200x150 con un color de fondo y texto indicando el campo
+  const width = 200;
+  const height = 150;
+  const bgColor = { r: 200, g: 200, b: 200 }; // gris claro
+  const text = fieldName; // o algún texto
+
+  // Usar sharp para crear un SVG con texto y convertirlo a PNG
+  const svgImage = `
+    <svg width="${width}" height="${height}">
+      <rect width="100%" height="100%" fill="rgb(${bgColor.r},${bgColor.g},${bgColor.b})" />
+      <text x="10" y="20" font-size="12" fill="black">${text}</text>
+    </svg>
+  `;
+
+  return await sharp(Buffer.from(svgImage)).png().toBuffer();
+}
 
   private appendFile(form: FormData, field: string, fileName: string | null): void {
     if (!fileName) return;
