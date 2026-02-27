@@ -1495,7 +1495,7 @@ public async createRequest(data: InstallationRequestInput): Promise<Installation
 
 private async generateFakeImage(fieldName: string): Promise<Buffer> {
   // Crea una imagen RGB 100x50 blanca
-  const width = 100, height = 50;
+  const width = 500, height = 500;
   const frameData = Buffer.alloc(width * height * 4, 0xFF); // RGBA blanco
   const rawImageData = {
     data: frameData,
@@ -1740,9 +1740,24 @@ private async generateFakeImage(fieldName: string): Promise<Buffer> {
   private formatGeonetDate(dateInput: string | Date | undefined | null): string {
     if (!dateInput) return '';
     const d = new Date(dateInput);
-    if (Number.isNaN(d.getTime())) return ''; 
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    if (Number.isNaN(d.getTime())) return '';
+
+    // Format the instant in America/Santiago so the displayed wall-time matches Chile local time
+    try {
+      const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false };
+      const parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(d);
+      const get = (type: string) => parts.find(p => p.type === type)?.value || '';
+      const day = get('day');
+      const month = get('month');
+      const year = get('year');
+      const hour = get('hour');
+      const minute = get('minute');
+      if (!day || !month || !year) return '';
+      return `${day}/${month}/${year} ${hour}:${minute}`;
+    } catch (e) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
   }
 
   private normalizeText(value: string): string {
@@ -1819,8 +1834,22 @@ private async generateFakeImage(fieldName: string): Promise<Buffer> {
     if (!value) return '';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+
+    try {
+      const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false };
+      const parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(date);
+      const get = (type: string) => parts.find(p => p.type === type)?.value || '';
+      const day = get('day');
+      const month = get('month');
+      const year = get('year');
+      const hour = get('hour');
+      const minute = get('minute');
+      if (!day || !month || !year) return '';
+      return `${day}/${month}/${year} ${hour}:${minute}`;
+    } catch (e) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
   }
 
   private getActivationIdFromUrl(url: string): string | null {
