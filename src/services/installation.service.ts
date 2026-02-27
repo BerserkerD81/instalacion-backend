@@ -1402,29 +1402,60 @@ export class InstallationService extends GeonetBaseService {
     }
   }
 
-  public async eliminarInstalacionGeonet(params: { externalId: string }): Promise<any> {
-    const { browser, page } = await this.openPage();
-    try {
-      if (!await this.ensureSession(page)) throw new Error('Auth falló');
-      const deletePageUrl = `${GEONET_BASE_URL}/Instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`;
-      logger.info(`[Puppeteer][eliminarInstalacionGeonet] Abriendo página de eliminación: ${deletePageUrl}`);
-      await this.safeGoto(page, deletePageUrl);
+public async eliminarInstalacionGeonet(params: { externalId: string }): Promise<any> {
+  const { browser, page } = await this.openPage();
+  
+  try {
+    if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
-        page.click('button[type="submit"], input[type="submit"]')
-      ]);
+    const deletePageUrl = `${GEONET_BASE_URL}/Instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`;
+    logger.info(`[Puppeteer] Abriendo página: ${deletePageUrl}`);
+    
+    await this.safeGoto(page, deletePageUrl);
 
-      const finalUrl = page.url();
-      if (!finalUrl || finalUrl.includes('/Instalaciones/eliminar/') || finalUrl.includes('/eliminar/')) {
-        const snippet = await page.evaluate(() => document.body.innerText?.substring(0, 400) || '');
-        logger.warn(`[Puppeteer][eliminarInstalacionGeonet] Navegación no completada o URL esperada no alcanzada. URL:${finalUrl} SNIPPET:${snippet}`);
-      }
-      return { status: 200, location: finalUrl, deletePageUrl };
-    } finally {
-      await page.close();
+    // 1. Clic en el primer botón rojo ("Si, Estoy Seguro") para abrir el modal
+    const initialDeleteBtn = 'button.btn-danger, input[value*="Seguro"]';
+    await page.waitForSelector(initialDeleteBtn, { visible: true, timeout: 5000 });
+    await page.click(initialDeleteBtn);
+    logger.info(`[Puppeteer] Primer botón presionado, esperando modal...`);
+
+    // 2. Esperar a que el modal de confirmación aparezca
+    // El input suele ser el único tipo text dentro del modal o un ID específico
+    const modalInputSelector = 'div.modal-content input[type="text"], #id_confirmar_eliminacion'; 
+    await page.waitForSelector(modalInputSelector, { visible: true, timeout: 5000 });
+
+    // 3. Escribir la palabra clave requerida
+    const confirmText = "eliminar_clientes";
+    await page.type(modalInputSelector, confirmText, { delay: 50 }); // Simula escritura humana
+    logger.info(`[Puppeteer] Texto de seguridad ingresado.`);
+
+    // 4. Hacer clic en el botón verde final ("Eliminar Cliente(s)")
+    const finalConfirmBtn = 'button.btn-success, .modal-footer .btn-success';
+    await page.waitForSelector(finalConfirmBtn, { visible: true });
+    
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 20000 }).catch(() => null),
+      page.click(finalConfirmBtn)
+    ]);
+
+    const finalUrl = page.url();
+    const success = !finalUrl.includes('/eliminar/');
+
+    if (!success) {
+      logger.error(`[Puppeteer] No se redirigió tras el borrado. URL: ${finalUrl}`);
     }
+
+    return { status: success ? 200 : 400, location: finalUrl, deletePageUrl };
+
+  } catch (error) {
+    const screenshotName = `error-delete-${Date.now()}.png`;
+    await page.screenshot({ path: screenshotName });
+    logger.error(`[Puppeteer] Error en borrado: ${(error as Error)?.message}. Captura: ${screenshotName}`);
+    throw error;
+  } finally {
+    await page.close();
   }
+}
 
   // =========================================================================
   // API WISPHUB Y AXIOS (Mantenido con API de Axios original)
