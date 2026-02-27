@@ -1404,56 +1404,115 @@ export class InstallationService extends GeonetBaseService {
 
 public async eliminarInstalacionGeonet(params: { externalId: string }): Promise<any> {
   const { browser, page } = await this.openPage();
-  
-  try {
-    if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
-    const deletePageUrl = `${GEONET_BASE_URL}/Instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`;
-    logger.info(`[Puppeteer] Abriendo página: ${deletePageUrl}`);
-    
+  try {
+    if (!await this.ensureSession(page)) {
+      throw new Error('[Geonet] Falló la autenticación de sesión');
+    }
+
+    const deletePageUrl = `${GEONET_BASE_URL}/instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`;
+    logger.info(`[Puppeteer] Navegando a: ${deletePageUrl}`);
+
     await this.safeGoto(page, deletePageUrl);
 
-    // 1. Clic en el primer botón rojo ("Si, Estoy Seguro") para abrir el modal
-    const initialDeleteBtn = 'button.btn-danger, input[value*="Seguro"]';
-    await page.waitForSelector(initialDeleteBtn, { visible: true, timeout: 5000 });
+    // ── PASO 1: Verificar que la página cargó correctamente ──────────────────
+    const currentUrl = page.url();
+    if (!currentUrl.includes('/eliminar/')) {
+      throw new Error(`[Geonet] URL inesperada tras navegar: ${currentUrl}`);
+    }
+
+    // ── PASO 2: Clic en "Si, Estoy Seguro" para abrir el modal ───────────────
+    logger.info('[Puppeteer] Buscando botón "Si, Estoy Seguro"...');
+
+    const initialDeleteBtn = 'button.btn-danger';
+    await page.waitForSelector(initialDeleteBtn, { visible: true, timeout: 8000 });
     await page.click(initialDeleteBtn);
-    logger.info(`[Puppeteer] Primer botón presionado, esperando modal...`);
 
-    // 2. Esperar a que el modal de confirmación aparezca
-    // El input suele ser el único tipo text dentro del modal o un ID específico
-    const modalInputSelector = 'div.modal-content input[type="text"], #id_confirmar_eliminacion'; 
-    await page.waitForSelector(modalInputSelector, { visible: true, timeout: 5000 });
+    logger.info('[Puppeteer] Botón clickeado, esperando animación del modal...');
 
-    // 3. Escribir la palabra clave requerida
-    const confirmText = "eliminar_clientes";
-    await page.type(modalInputSelector, confirmText, { delay: 50 }); // Simula escritura humana
-    logger.info(`[Puppeteer] Texto de seguridad ingresado.`);
+    // ── PASO 3: Esperar que el modal esté completamente visible ───────────────
+    // Esperamos el input dentro del modal (el que pide "eliminar_clientes")
+    const modalInputSelector = '.modal.show input[type="text"], .modal-dialog input[type="text"]';
 
-    // 4. Hacer clic en el botón verde final ("Eliminar Cliente(s)")
-    const finalConfirmBtn = 'button.btn-success, .modal-footer .btn-success';
-    await page.waitForSelector(finalConfirmBtn, { visible: true });
-    
+    await page.waitForFunction(
+      (selector: string) => {
+        const input = document.querySelector(selector) as HTMLInputElement | null;
+        return input !== null && input.offsetParent !== null; // visible en DOM
+      },
+      { timeout: 8000 },
+      modalInputSelector
+    );
+
+    logger.info('[Puppeteer] Modal visible. Ingresando texto de confirmación...');
+
+    // ── PASO 4: Limpiar el campo y escribir la confirmación ───────────────────
+    await page.focus(modalInputSelector);
+    await page.evaluate((selector: string) => {
+      const input = document.querySelector(selector) as HTMLInputElement;
+      if (input) input.value = ''; // limpiar por si acaso
+    }, modalInputSelector);
+
+    // "eliminar_clientes" según lo que muestra el modal en la captura
+    const confirmText = 'eliminar_clientes';
+    await page.type(modalInputSelector, confirmText, { delay: 80 });
+
+    logger.info(`[Puppeteer] Texto "${confirmText}" ingresado.`);
+
+    // ── PASO 5: Verificar que el botón "Eliminar Cliente(s)" esté habilitado ──
+    const finalConfirmBtnSelector = '.modal-content button.btn-success, .modal button[type="submit"]';
+
+    await page.waitForSelector(finalConfirmBtnSelector, { visible: true, timeout: 5000 });
+
+    const isDisabled = await page.$eval(
+      finalConfirmBtnSelector,
+      (btn) => (btn as HTMLButtonElement).disabled
+    );
+
+    if (isDisabled) {
+      throw new Error('[Geonet] El botón "Eliminar Cliente(s)" está deshabilitado. ¿El texto ingresado es incorrecto?');
+    }
+
+    logger.info('[Puppeteer] Haciendo clic en "Eliminar Cliente(s)"...');
+
+    // ── PASO 6: Clic final + esperar navegación ───────────────────────────────
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 20000 }).catch(() => null),
-      page.click(finalConfirmBtn)
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }),
+      page.click(finalConfirmBtnSelector),
     ]);
 
+    // ── PASO 7: Validar resultado ─────────────────────────────────────────────
     const finalUrl = page.url();
     const success = !finalUrl.includes('/eliminar/');
 
-    if (!success) {
-      logger.error(`[Puppeteer] No se redirigió tras el borrado. URL: ${finalUrl}`);
+    if (success) {
+      logger.info(`[Puppeteer] Instalación eliminada correctamente. Redirigido a: ${finalUrl}`);
+    } else {
+      logger.error(`[Puppeteer] La URL no cambió tras eliminar. URL actual: ${finalUrl}`);
     }
 
-    return { status: success ? 200 : 400, location: finalUrl, deletePageUrl };
+    return {
+      status: success ? 200 : 400,
+      message: success ? 'Instalación eliminada correctamente' : 'No se pudo confirmar la eliminación',
+      location: finalUrl,
+      deletePageUrl,
+    };
 
   } catch (error) {
-    const screenshotName = `error-delete-${Date.now()}.png`;
-    await page.screenshot({ path: screenshotName });
-    logger.error(`[Puppeteer] Error en borrado: ${(error as Error)?.message}. Captura: ${screenshotName}`);
+    const screenshotPath = `error-delete-${params.externalId}-${Date.now()}.png`;
+
+    try {
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      logger.error(`[Puppeteer] Captura guardada en: ${screenshotPath}`);
+    } catch (screenshotError) {
+      logger.warn('[Puppeteer] No se pudo guardar la captura de pantalla.');
+    }
+
+    logger.error(`[Puppeteer] Error al eliminar instalación "${params.externalId}": ${(error as Error)?.message}`);
     throw error;
+
   } finally {
-    await page.close();
+    await page.close().catch(() => null);
+    await browser.close().catch(() => null); // ← faltaba cerrar el browser
   }
 }
 

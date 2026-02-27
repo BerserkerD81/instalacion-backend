@@ -188,7 +188,8 @@ export class InstallationController {
         return res.status(422).json(result);
       }
 
-      return res.status(isOk ? 200 : 502).json(result);
+      // Normalizar respuesta a 200 y dejar el `result.status` original dentro del body
+      return res.status(200).json(result);
     } catch (error: any) {
       logger.error(`Error creating Geonet ticket: ${String(error)}`);
       const statusCode = error.statusCode || 500;
@@ -212,7 +213,8 @@ export class InstallationController {
         return res.status(422).json(result);
       }
 
-      return res.status(isOk ? 200 : 502).json(result);
+      // Normalizar respuesta a 200 y dejar el `result.status` original dentro del body
+      return res.status(200).json(result);
     } catch (error: any) {
       logger.error(`Error deleting Geonet ticket: ${String(error)}`);
       const statusCode = error.statusCode || 500;
