@@ -1224,10 +1224,16 @@ export class InstallationService extends GeonetBaseService {
       await this.safeGoto(page, `${GEONET_BASE_URL}/tickets/eliminar/${params.ticketId}/`);
 
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
         page.click('button[type="submit"], input[type="submit"]')
       ]);
-      return { status: 200, location: page.url() };
+
+      const finalUrl = page.url();
+      if (!finalUrl || finalUrl.includes('/eliminar/')) {
+        const snippet = await page.evaluate(() => document.body.innerText?.substring(0, 400) || '');
+        logger.warn(`[Puppeteer][eliminarTicketGeonet] Navegación no completada o URL esperada no alcanzada. URL:${finalUrl} SNIPPET:${snippet}`);
+      }
+      return { status: 200, location: finalUrl };
     } finally {
       await page.close();
     }
@@ -1400,13 +1406,21 @@ export class InstallationService extends GeonetBaseService {
     const { browser, page } = await this.openPage();
     try {
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
-      await this.safeGoto(page, `${GEONET_BASE_URL}/Instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`);
+      const deletePageUrl = `${GEONET_BASE_URL}/Instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`;
+      logger.info(`[Puppeteer][eliminarInstalacionGeonet] Abriendo página de eliminación: ${deletePageUrl}`);
+      await this.safeGoto(page, deletePageUrl);
 
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
         page.click('button[type="submit"], input[type="submit"]')
       ]);
-      return { status: 200, location: page.url() };
+
+      const finalUrl = page.url();
+      if (!finalUrl || finalUrl.includes('/Instalaciones/eliminar/') || finalUrl.includes('/eliminar/')) {
+        const snippet = await page.evaluate(() => document.body.innerText?.substring(0, 400) || '');
+        logger.warn(`[Puppeteer][eliminarInstalacionGeonet] Navegación no completada o URL esperada no alcanzada. URL:${finalUrl} SNIPPET:${snippet}`);
+      }
+      return { status: 200, location: finalUrl, deletePageUrl };
     } finally {
       await page.close();
     }
