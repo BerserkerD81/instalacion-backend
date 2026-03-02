@@ -1290,25 +1290,8 @@ export class InstallationService extends GeonetBaseService {
         fechaInstalacion: 'cliente-fecha_instalacion',
         fecha_instalacion: 'cliente-fecha_instalacion',
         agreedInstallationDate: 'cliente-fecha_instalacion',
-      };
-
-      const specialKeys = ['routerName', 'zonaName', 'apName', 'planName', 'technicianName', 'tecnico', 'tecnicoName', 'comments', 'comentarios'];
-      for (const [key, value] of Object.entries(updates)) {
-        if (value === undefined || value === null) continue;
-        if (specialKeys.includes(key)) continue;
-        const formKey = fieldMap[key] || key;
-        resolvedUpdates[formKey] = String(value);
-      }
-
-      const techInput = updates.technicianName || updates.tecnico || updates.tecnicoName;
-      if (techInput) {
-        const opts = await this.extractSelectOptions(page, '#id_cliente-tecnico');
-        const id = this.findOptionIdObj(opts, String(techInput));
-        if (id) {
-            resolvedUpdates['cliente-tecnico'] = id;
-        } else {
-            logger.warn(`[editarInstalacionGeonet] Técnico '${techInput}' no encontrado. Se mantendrá el actual.`);
-        }
+        fecha_inicio: 'cliente-fecha_instalacion',
+        fechaInicio: 'cliente-fecha_instalacion',
       }
 
       if (updates.routerName) {
