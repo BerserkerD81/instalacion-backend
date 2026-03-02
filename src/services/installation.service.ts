@@ -828,12 +828,8 @@ export class InstallationService extends GeonetBaseService {
     await this.ensureDataSource();
     const repo = AppDataSource.getRepository(InstallationRequest);
 
-    // Extraemos un posible RUT dentro del texto (soporta formatos con o sin puntos y con o sin guión)
     const input = String(clientCi || '').trim();
-    const rutMatch = input.match(/(\d{1,2}(?:\.\d{3}){1,2}-?[0-9kK])|(\d{7,8}-?[0-9kK])/);
-    const candidate = rutMatch ? rutMatch[0] : input;
-
-    const variants = this.formatRutVariants(candidate);
+    const variants = this.formatRutVariants(input);
     if (!variants) return undefined;
 
     logger.info('findInstallationRequestIdByClientCi: candidate/variants', variants);
@@ -869,7 +865,7 @@ export class InstallationService extends GeonetBaseService {
   }
 
   private formatRutVariants(raw: string): { dotted: string; dashed: string; normalized: string } | null {
-    const normalized = raw.replace(/[\.\-\s]/g, '').toLowerCase().trim();
+    const normalized = raw.replace(/[^0-9kK]/g, '').toLowerCase().trim();
     if (!normalized) return null;
 
     const body = normalized.slice(0, -1);
