@@ -86,4 +86,10 @@ export class InstallationRequest {
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP', onUpdate: 'CURRENT_TIMESTAMP' })
   updatedAt!: Date;
+
+  @Column({ type: 'boolean', nullable: true, default: false })
+  geonetActivated!: boolean | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  geonetClientId!: string | null;
 }

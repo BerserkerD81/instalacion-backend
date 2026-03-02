@@ -774,6 +774,15 @@ export class InstallationService extends GeonetBaseService {
       throw Object.assign(new Error('planName no encontrado'), { statusCode: 400 });
     }
 
+    // --- Guardia de idempotencia: si ya fue activado en Geonet, no repetir ---
+    if (resolvedRequest.geonetActivated) {
+      logger.warn(`lookupPreinstallationActivation: cliente ${resolvedRequest.ci} ya fue activado en Geonet (geonetClientId=${resolvedRequest.geonetClientId}). Retornando sin acción.`);
+      throw Object.assign(
+        new Error(`El cliente ${resolvedRequest.firstName} ${resolvedRequest.lastName} ya fue activado en Geonet (ID: ${resolvedRequest.geonetClientId}). No se puede activar dos veces.`),
+        { statusCode: 409 }
+      );
+    }
+
     const { browser, page } = await this.openPage();
     try {
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
@@ -816,6 +825,19 @@ export class InstallationService extends GeonetBaseService {
         planId,
         installationRequestId: resolvedRequestId,
       });
+
+      // --- Marcar como activado para evitar duplicados ---
+      try {
+        const geonetClientId = this.getActivationIdFromUrl(activationLink);
+        const repo = AppDataSource.getRepository(InstallationRequest);
+        await repo.update(resolvedRequestId, {
+          geonetActivated: true,
+          geonetClientId: geonetClientId ? String(geonetClientId) : null,
+        } as any);
+        logger.info(`lookupPreinstallationActivation: marcado geonetActivated=true, geonetClientId=${geonetClientId} para request ${resolvedRequestId}`);
+      } catch (saveErr: any) {
+        logger.error(`lookupPreinstallationActivation: no se pudo guardar geonetActivated: ${saveErr?.message}`);
+      }
 
       return { activationLink, technicianId, planId, firstAvailableIp, activationPostStatus };
     } finally {
@@ -1107,7 +1129,7 @@ export class InstallationService extends GeonetBaseService {
           method: 'POST',
           body: formParams.toString(),
           headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrf },
-          redirect: 'manual'
+          redirect: 'follow'
         });
 
         return { status: res.status, url: res.url };
@@ -1155,10 +1177,19 @@ export class InstallationService extends GeonetBaseService {
       }
     });
 
+    const activationSuccess = !String(result.url || '').includes('/activar/');
+    logger.info(`[Puppeteer] Activación Geonet: activationSuccess=${activationSuccess}, status=${result.status}, finalUrl=${result.url}`);
+
+    if (!activationSuccess) {
+      logger.error(`[Puppeteer] Activación falló — Geonet devolvió la misma URL del formulario. Posible error de validación.`);
+      throw Object.assign(
+        new Error('La activación en Geonet falló: el formulario fue rechazado (datos duplicados o inválidos)'),
+        { statusCode: 422 }
+      );
+    }
+
     return { status: result.status, ip: finalIp };
   }
-
-  // --- GEONET TICKETS ---
   public async crearTicket(params: GeonetTicketInput): Promise<any> {
     const start = Date.now();
     const { browser, page } = await this.openPage();
