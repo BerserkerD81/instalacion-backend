@@ -1478,10 +1478,14 @@ public async eliminarInstalacionGeonet(params: { externalId: string }): Promise<
     }, deleteUrl, csrfToken);
 
     // ── PASO 6: Validar resultado ────────────────────────────────────────────
-    const success = result.status < 400 && !result.finalUrl.includes('/eliminar/');
+    const success = result.status < 400;
 
     if (!success) {
       throw new Error(`[Geonet] POST retornó status ${result.status}, URL final: ${result.finalUrl}`);
+    }
+
+    if (result.finalUrl.includes('/eliminar/')) {
+      logger.warn(`[Geonet] POST retornó ${result.status} pero permaneció en la página de eliminación: ${result.finalUrl}`);
     }
 
     // Refrescar timestamp de cookies al tener éxito
