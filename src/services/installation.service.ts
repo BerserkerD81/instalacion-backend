@@ -1548,6 +1548,19 @@ public async createRequest(data: InstallationRequestInput): Promise<Installation
   await this.ensureDataSource();
   const repo = AppDataSource.getRepository(InstallationRequest);
 
+  // --- Validar duplicado de RUT antes de llamar a Wisphub ---
+  if (data.ci) {
+    const existing = await repo.findOne({ where: { ci: data.ci as string } });
+    if (existing) {
+      logger.error(`Duplicate CI detected: ${data.ci}`);
+      throw Object.assign(new Error('RUT duplicado'), {
+        isWisphubError: true,
+        status: 400,
+        data: { ci: [`Ya existe una solicitud registrada con el RUT ${data.ci}`] },
+      });
+    }
+  }
+
   // --- Generar imágenes falsas para campos faltantes ---
   const imageFields = ['idFront', 'idBack', 'addressProof', 'coupon'];
   const fakeImagePaths: string[] = [];
@@ -1572,8 +1585,12 @@ public async createRequest(data: InstallationRequestInput): Promise<Installation
     // Enviar a Wisphub con el payload que incluye rutas a imágenes falsas o reales
     const wisphubResult = await this.notifyWisphub(wisphubPayload as any);
     if (!wisphubResult || (wisphubResult.status !== null && wisphubResult.status >= 400)) {
-      logger.error('Wisphub response:', wisphubResult); // <-- Agrega este log
-      throw new Error('Wisphub error');
+      logger.error('Wisphub response:', wisphubResult);
+      throw Object.assign(new Error('Wisphub error'), {
+        isWisphubError: true,
+        status: wisphubResult?.status ?? 400,
+        data: wisphubResult?.data ?? { message: 'Error en Wisphub' },
+      });
     }
 
     // Guardar en BD con los datos originales (sin las rutas falsas)
