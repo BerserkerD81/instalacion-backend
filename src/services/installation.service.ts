@@ -1842,13 +1842,15 @@ private async generateFakeImage(fieldName: string): Promise<Buffer> {
       const day = get('day');
       const month = get('month');
       const year = get('year');
-      const hour = get('hour');
+      // Intl with hour12:false can return '24' for midnight — normalize to '00'
+      const hour = get('hour') === '24' ? '00' : get('hour');
       const minute = get('minute');
       if (!day || !month || !year) return '';
-      return `${day}/${month}/${year} ${hour}:${minute}`;
+      // Include seconds (:00) — Django's DateTimeField requires the full HH:mm:ss format
+      return `${day}/${month}/${year} ${hour}:${minute}:00`;
     } catch (e) {
       const pad = (n: number) => String(n).padStart(2, '0');
-      return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
     }
   }
 

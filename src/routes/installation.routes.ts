@@ -64,4 +64,11 @@ router.patch(
 	(req, res) => installationController.editarTicketGeonet(req, res)
 );
 
+// Wisphub alias: same Geonet scraper, different URL segment used by n8n workflows
+router.patch(
+	'/wisphub/tickets/:ticketId',
+	upload.single('archivo_ticket'),
+	(req, res) => installationController.editarTicketGeonet(req, res)
+);
+
 export default router;
