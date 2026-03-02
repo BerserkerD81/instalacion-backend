@@ -833,16 +833,24 @@ export class InstallationService extends GeonetBaseService {
     const rutMatch = input.match(/(\d{1,2}(?:\.\d{3}){1,2}-?[0-9kK])|(\d{7,8}-?[0-9kK])/);
     const candidate = rutMatch ? rutMatch[0] : input;
 
-    // Limpiamos puntos, guiones y espacios, y forzamos minúsculas para la K
-    const cleanCi = candidate.replace(/[\.\-\s]/g, '').toLowerCase().trim();
+    const variants = this.formatRutVariants(candidate);
+    if (!variants) return undefined;
 
-    logger.info('findInstallationRequestIdByClientCi: candidate/cleaned', { candidate, cleanCi });
+    logger.info('findInstallationRequestIdByClientCi: candidate/variants', variants);
 
-    if (!cleanCi) return undefined;
+    // Primero intentamos match exacto con el formato preferido (20.954.516-0) y luego sin puntos.
+    for (const exact of [variants.dotted, variants.dashed]) {
+      if (!exact) continue;
+      const direct = await repo.findOne({ where: { ci: exact } });
+      if (direct) {
+        logger.info('findInstallationRequestIdByClientCi: matched direct format', { id: direct.id, dbCi: direct.ci });
+        return direct.id;
+      }
+    }
 
-    // Comparamos normalizando la columna de la BD a minúsculas y sin puntos/guiones
+    // Fallback: comparar normalizando (sin puntos/guiones) para soportar entradas antiguas o inconsistentes.
     const matches = await repo.createQueryBuilder('r')
-      .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) = :ci', { ci: `${cleanCi}` })
+      .where('LOWER(REPLACE(REPLACE(r.ci, ".", ""), "-", "")) = :ci', { ci: `${variants.normalized}` })
       .getMany();
 
     if (matches.length === 1) {
@@ -852,12 +860,27 @@ export class InstallationService extends GeonetBaseService {
     }
 
     if (matches.length > 1) {
-      logger.error('findInstallationRequestIdByClientCi: multiple rows matched same CI', { cleanCi, matches: matches.map(m => ({ id: m.id, ci: m.ci })) });
+      logger.error('findInstallationRequestIdByClientCi: multiple rows matched same CI', { cleanCi: variants.normalized, matches: matches.map(m => ({ id: m.id, ci: m.ci })) });
       throw Object.assign(new Error('Se encontraron múltiples InstallationRequest con el mismo RUT'), { statusCode: 409 });
     }
 
-    logger.info('findInstallationRequestIdByClientCi: no match in DB', { cleanCi });
+    logger.info('findInstallationRequestIdByClientCi: no match in DB', { cleanCi: variants.normalized });
     return undefined;
+  }
+
+  private formatRutVariants(raw: string): { dotted: string; dashed: string; normalized: string } | null {
+    const normalized = raw.replace(/[\.\-\s]/g, '').toLowerCase().trim();
+    if (!normalized) return null;
+
+    const body = normalized.slice(0, -1);
+    const dv = normalized.slice(-1);
+    if (!body) return null;
+
+    const dashed = `${body}-${dv}`;
+    const dottedBody = body.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    const dotted = `${dottedBody}-${dv}`;
+
+    return { dotted, dashed, normalized };
   }
 
   private async submitGeonetActivation(params: {
@@ -1403,116 +1426,85 @@ export class InstallationService extends GeonetBaseService {
   }
 
 public async eliminarInstalacionGeonet(params: { externalId: string }): Promise<any> {
-  const { browser, page } = await this.openPage();
+  const { page } = await this.openPage();
 
   try {
-    if (!await this.ensureSession(page)) {
-      throw new Error('[Geonet] Falló la autenticación de sesión');
+    const deleteUrl = `${GEONET_BASE_URL}/Instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`;
+
+    // ── PASO 1: Navegar a la página de eliminación ──────────────────────────
+    await page.goto(deleteUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // ── PASO 2: Detectar si la sesión expiró (redirigió al login) ───────────
+    if (page.url().includes('/accounts/login/')) {
+      logger.warn('[Geonet] Sesión expirada. Re-autenticando...');
+      cachedCookies = null;
+      cookiesTimestamp = 0;
+
+      const reAuthOk = await this.ensureSession(page, { force: true });
+      if (!reAuthOk) {
+        throw new Error('[Geonet] Re-autenticación fallida — credenciales inválidas');
+      }
+
+      logger.info('[Geonet] Re-autenticación exitosa. Reintentando navegación...');
+      await page.goto(deleteUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     }
 
-    const deletePageUrl = `${GEONET_BASE_URL}/instalaciones/eliminar/${encodeURIComponent(params.externalId)}/`;
-    logger.info(`[Puppeteer] Navegando a: ${deletePageUrl}`);
-
-    await this.safeGoto(page, deletePageUrl);
-
-    // ── PASO 1: Verificar que la página cargó correctamente ──────────────────
-    const currentUrl = page.url();
-    if (!currentUrl.includes('/eliminar/')) {
-      throw new Error(`[Geonet] URL inesperada tras navegar: ${currentUrl}`);
+    // ── PASO 3: Verificar que estamos en la página correcta ─────────────────
+    if (!page.url().includes('/eliminar/')) {
+      throw new Error(`[Geonet] URL inesperada tras navegar: ${page.url()}`);
     }
 
-    // ── PASO 2: Clic en "Si, Estoy Seguro" para abrir el modal ───────────────
-    logger.info('[Puppeteer] Buscando botón "Si, Estoy Seguro"...');
+    // ── PASO 4: Obtener el CSRF token ────────────────────────────────────────
+    const csrfToken = await page.$eval(
+      'input[name="csrfmiddlewaretoken"]',
+      (el: Element) => (el as HTMLInputElement).value
+    ).catch(() => null);
 
-    const initialDeleteBtn = 'button.btn-danger';
-    await page.waitForSelector(initialDeleteBtn, { visible: true, timeout: 8000 });
-    await page.click(initialDeleteBtn);
-
-    logger.info('[Puppeteer] Botón clickeado, esperando animación del modal...');
-
-    // ── PASO 3: Esperar que el modal esté completamente visible ───────────────
-    // Esperamos el input dentro del modal (el que pide "eliminar_clientes")
-    const modalInputSelector = '.modal.show input[type="text"], .modal-dialog input[type="text"]';
-
-    await page.waitForFunction(
-      (selector: string) => {
-        const input = document.querySelector(selector) as HTMLInputElement | null;
-        return input !== null && input.offsetParent !== null; // visible en DOM
-      },
-      { timeout: 8000 },
-      modalInputSelector
-    );
-
-    logger.info('[Puppeteer] Modal visible. Ingresando texto de confirmación...');
-
-    // ── PASO 4: Limpiar el campo y escribir la confirmación ───────────────────
-    await page.focus(modalInputSelector);
-    await page.evaluate((selector: string) => {
-      const input = document.querySelector(selector) as HTMLInputElement;
-      if (input) input.value = ''; // limpiar por si acaso
-    }, modalInputSelector);
-
-    // "eliminar_clientes" según lo que muestra el modal en la captura
-    const confirmText = 'eliminar_clientes';
-    await page.type(modalInputSelector, confirmText, { delay: 80 });
-
-    logger.info(`[Puppeteer] Texto "${confirmText}" ingresado.`);
-
-    // ── PASO 5: Verificar que el botón "Eliminar Cliente(s)" esté habilitado ──
-    const finalConfirmBtnSelector = '.modal-content button.btn-success, .modal button[type="submit"]';
-
-    await page.waitForSelector(finalConfirmBtnSelector, { visible: true, timeout: 5000 });
-
-    const isDisabled = await page.$eval(
-      finalConfirmBtnSelector,
-      (btn) => (btn as HTMLButtonElement).disabled
-    );
-
-    if (isDisabled) {
-      throw new Error('[Geonet] El botón "Eliminar Cliente(s)" está deshabilitado. ¿El texto ingresado es incorrecto?');
+    if (!csrfToken) {
+      throw new Error('[Geonet] No se pudo obtener el CSRF token');
     }
 
-    logger.info('[Puppeteer] Haciendo clic en "Eliminar Cliente(s)"...');
+    // ── PASO 5: POST directo (saltamos el modal, es solo validación client-side)
+    const result = await page.evaluate(async (url: string, csrf: string) => {
+      const body = new URLSearchParams({ csrfmiddlewaretoken: csrf });
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-CSRFToken': csrf,
+          'Referer': url,
+        },
+        body: body.toString(),
+      });
+      return { status: res.status, finalUrl: res.url };
+    }, deleteUrl, csrfToken);
 
-    // ── PASO 6: Clic final + esperar navegación ───────────────────────────────
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }),
-      page.click(finalConfirmBtnSelector),
-    ]);
+    // ── PASO 6: Validar resultado ────────────────────────────────────────────
+    const success = result.status < 400 && !result.finalUrl.includes('/eliminar/');
 
-    // ── PASO 7: Validar resultado ─────────────────────────────────────────────
-    const finalUrl = page.url();
-    const success = !finalUrl.includes('/eliminar/');
-
-    if (success) {
-      logger.info(`[Puppeteer] Instalación eliminada correctamente. Redirigido a: ${finalUrl}`);
-    } else {
-      logger.error(`[Puppeteer] La URL no cambió tras eliminar. URL actual: ${finalUrl}`);
+    if (!success) {
+      throw new Error(`[Geonet] POST retornó status ${result.status}, URL final: ${result.finalUrl}`);
     }
+
+    // Refrescar timestamp de cookies al tener éxito
+    cookiesTimestamp = Date.now();
+    logger.info(`[Geonet] Instalación "${params.externalId}" eliminada. Redirigido a: ${result.finalUrl}`);
 
     return {
-      status: success ? 200 : 400,
-      message: success ? 'Instalación eliminada correctamente' : 'No se pudo confirmar la eliminación',
-      location: finalUrl,
-      deletePageUrl,
+      status: 200,
+      message: 'Instalación eliminada correctamente',
+      externalId: params.externalId,
     };
 
   } catch (error) {
-    const screenshotPath = `error-delete-${params.externalId}-${Date.now()}.png`;
-
-    try {
-      await page.screenshot({ path: screenshotPath, fullPage: true });
-      logger.error(`[Puppeteer] Captura guardada en: ${screenshotPath}`);
-    } catch (screenshotError) {
-      logger.warn('[Puppeteer] No se pudo guardar la captura de pantalla.');
-    }
-
-    logger.error(`[Puppeteer] Error al eliminar instalación "${params.externalId}": ${(error as Error)?.message}`);
+    const screenshotPath = `/tmp/error-delete-${params.externalId}-${Date.now()}.png`;
+    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => null);
+    logger.error(`[Geonet] Error eliminando "${params.externalId}": ${(error as Error).message}`);
+    logger.error(`[Geonet] Captura guardada en: ${screenshotPath}`);
     throw error;
 
   } finally {
     await page.close().catch(() => null);
-    await browser.close().catch(() => null); // ← faltaba cerrar el browser
   }
 }
 
@@ -1974,3 +1966,4 @@ private async generateFakeImage(fieldName: string): Promise<Buffer> {
     return AppDataSource.getRepository(InstallationRequest).findOne({ where: { id } });
   }
 }
+
