@@ -783,27 +783,62 @@ export class InstallationService extends GeonetBaseService {
       );
     }
 
+    // --- Intentar obtener el link de activación vía API de WispHub (más rápido y confiable) ---
+    const rawCi = client_ci || resolvedRequest?.ci || '';
+    let apiActivationLink: string | null = null;
+    try {
+      apiActivationLink = await this.findActivationLinkViaWisphubApi(rawCi);
+      if (apiActivationLink) {
+        logger.info(`lookupPreinstallationActivation: link obtenido vía WispHub API para CI "${rawCi}": ${apiActivationLink}`);
+      }
+    } catch (apiErr: any) {
+      logger.warn(`lookupPreinstallationActivation: WispHub API lookup falló, se usará scraping. ${apiErr?.message}`);
+    }
+
     const { browser, page } = await this.openPage();
     try {
       if (!await this.ensureSession(page)) throw new Error('Auth falló');
 
-      await this.safeGoto(page, `${GEONET_BASE_URL}/preinstalaciones/`);
+      let activationLink: string | null = apiActivationLink;
 
-      const targetTokens = this.normalizeText(clientName).split(' ').filter(Boolean);
+      if (!activationLink) {
+        // --- Fallback: scraping de la lista de preinstalaciones ---
+        await this.safeGoto(page, `${GEONET_BASE_URL}/preinstalaciones/`);
 
-      const activationLink = await page.evaluate((tokens) => {
-        const rows = Array.from(document.querySelectorAll('tr'));
-        for (const row of rows) {
-          const rowText = (row.textContent || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-          if (tokens.length === 0 || tokens.every((t: string) => rowText.includes(t))) {
+        const targetTokens = this.normalizeText(clientName).split(' ').filter(Boolean);
+        const normalizedCi = rawCi.replace(/\./g, '').toLowerCase().trim();
+        const ciDigits = normalizedCi.replace(/[^0-9k]/g, '');
+
+        activationLink = await page.evaluate((tokens, ciNorm, ciDigitsOnly) => {
+          const norm = (s: string) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\./g, '').trim();
+          const rows = Array.from(document.querySelectorAll('tr'));
+          let linkByName: string | null = null;
+          let linkByCi: string | null = null;
+
+          for (const row of rows) {
             const a = row.querySelector('a[href*="/preinstalacion/activar/"]');
-            if (a) return (a as HTMLAnchorElement).href;
-          }
-        }
-        return null;
-      }, targetTokens);
+            if (!a) continue;
+            const rowText = norm(row.textContent || '');
 
-      if (!activationLink) throw Object.assign(new Error('No se encontró enlace de activación'), { statusCode: 404 });
+            if (!linkByName && (tokens.length === 0 || tokens.every((t: string) => rowText.includes(t)))) {
+              linkByName = (a as HTMLAnchorElement).href;
+            }
+            if (!linkByCi && ciNorm) {
+              const rowNorm = rowText.replace(/\./g, '');
+              const rowDigits = rowText.replace(/[^0-9k]/g, '');
+              if (rowNorm.includes(ciNorm) || (ciDigitsOnly.length >= 7 && rowDigits.includes(ciDigitsOnly))) {
+                linkByCi = (a as HTMLAnchorElement).href;
+              }
+            }
+          }
+          return linkByName || linkByCi || null;
+        }, targetTokens, normalizedCi, ciDigits);
+      }
+
+      if (!activationLink) {
+        logger.warn(`lookupPreinstallationActivation: no se encontró enlace para "${clientName}" (CI: ${rawCi})`);
+        throw Object.assign(new Error('No se encontró enlace de activación'), { statusCode: 404 });
+      }
 
       await this.safeGoto(page, activationLink);
 
@@ -845,6 +880,59 @@ export class InstallationService extends GeonetBaseService {
     }
   }
 
+
+  /**
+   * Consulta la API de WispHub buscando una preinstalación (estado_instalacion=8) por cédula.
+   * Intenta múltiples variantes del RUT: con puntos y guión, sin puntos con guión, y solo dígitos.
+   * Retorna la URL de activación construida a partir del usuario e id_servicio del resultado.
+   */
+  private async findActivationLinkViaWisphubApi(rawCi: string): Promise<string | null> {
+    const { apiKey, apiUrl } = wisphubConfig;
+    if (!apiKey || !rawCi) return null;
+
+    // Construir variantes del RUT para la búsqueda
+    const normalized = rawCi.replace(/[^0-9kK]/g, '').toLowerCase(); // solo dígitos + dv
+    const body = normalized.slice(0, -1);
+    const dv = normalized.slice(-1);
+    const variants = [
+      rawCi.trim(),                          // tal como vino (ej: "18.572.016-0")
+      `${body}-${dv}`,                        // sin puntos, con guión (ej: "18572016-0")
+      normalized,                             // solo dígitos+dv sin separadores (ej: "185720160")
+    ].filter((v, i, arr) => v && arr.indexOf(v) === i); // únicos y no vacíos
+
+    // Resolver base URL de instalaciones
+    let base: string;
+    try {
+      base = `${new URL(apiUrl).origin}/api/instalaciones/`;
+    } catch {
+      base = 'https://api.wisphub.app/api/instalaciones/';
+    }
+
+    for (const variant of variants) {
+      try {
+        const url = `${base}?estado_instalacion=8&cedula__contains=${encodeURIComponent(variant)}&limit=5`;
+        logger.info(`findActivationLinkViaWisphubApi: consultando variante "${variant}"`);
+        const resp = await axios.get(url, {
+          headers: { Authorization: `Api-Key ${apiKey}` },
+          timeout: 10000,
+        });
+        const results: any[] = resp.data?.results ?? [];
+        if (results.length > 0) {
+          const match = results[0];
+          const usuario: string = match.usuario || '';
+          const idServicio: string | number = match.id_servicio ?? '';
+          if (usuario && idServicio) {
+            const link = `${GEONET_BASE_URL}/preinstalacion/activar/${encodeURIComponent(usuario)}/${idServicio}/`;
+            logger.info(`findActivationLinkViaWisphubApi: encontrado usuario=${usuario} id_servicio=${idServicio} → ${link}`);
+            return link;
+          }
+        }
+      } catch (err: any) {
+        logger.warn(`findActivationLinkViaWisphubApi: error con variante "${variant}": ${err?.message}`);
+      }
+    }
+    return null;
+  }
 
   private async findInstallationRequestIdByClientCi(clientCi: string): Promise<number | undefined> {
     await this.ensureDataSource();
