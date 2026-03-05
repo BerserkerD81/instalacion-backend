@@ -894,10 +894,16 @@ export class InstallationService extends GeonetBaseService {
     const normalized = rawCi.replace(/[^0-9kK]/g, '').toLowerCase(); // solo dígitos + dv
     const body = normalized.slice(0, -1);
     const dv = normalized.slice(-1);
+
+    // Formato con puntos: insertar punto cada 3 dígitos desde la derecha (ej: "16997812" → "16.997.812")
+    const bodyDotted = body.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    const dottedWithDash = `${bodyDotted}-${dv}`;  // ej: "16.997.812-3"
+
     const variants = [
-      rawCi.trim(),                          // tal como vino (ej: "18.572.016-0")
-      `${body}-${dv}`,                        // sin puntos, con guión (ej: "18572016-0")
-      normalized,                             // solo dígitos+dv sin separadores (ej: "185720160")
+      rawCi.trim(),           // tal como vino        (ej: "18.572.016-0" o "18572016-0")
+      dottedWithDash,         // con puntos y guión   (ej: "16.997.812-3")
+      `${body}-${dv}`,        // sin puntos, con guión (ej: "16997812-3")
+      normalized,             // solo dígitos+dv      (ej: "169978123")
     ].filter((v, i, arr) => v && arr.indexOf(v) === i); // únicos y no vacíos
 
     // Resolver base URL de instalaciones
