@@ -1115,124 +1115,44 @@ export class InstallationService extends GeonetBaseService {
     const zonaOptions = await this.extractSelectOptions(page, 'select[name*="zona_cliente" i]');
     const apOptions = await this.extractSelectOptions(page, 'select[name*="ap_cliente" i]');
 
+    // Direct value-based selection for zona, router, and AP
     let routerValue = '';
     let zonaValue = '';
     let apValue = '';
 
-    const getStrictName = (s: string) => {
-      return s.toLowerCase()
-        .replace(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)(?:[-_]\d+p)?/g, '')
-        .replace(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/g, '')
-        .replace(/(?:torre|edificio|block|sector)\s*[-:._]?\s*([a-z0-9]+)/g, '')
-        .replace(/\b(de|del|el|la|los|las|y|en|ii|iii|iv|v|ix)\b/g, '')
-        .replace(/[-:._()]/g, ' ')
-        .replace(/\s+/g, ' ').trim();
-    };
-
-    // --- Lógica de mapeo original (Router, Zona, AP) ---
-      // LOG: Opciones disponibles
-      logger.info(`[Geonet] Opciones de router: ${routerOptions.map(o => o.text).join(', ')}`);
-      logger.info(`[Geonet] Opciones de zona: ${zonaOptions.map(o => o.text).join(', ')}`);
-      logger.info(`[Geonet] Parámetros recibidos: zonaName='${zonaName}', routerName='${routerName}'`);
-
-      // Sincronización zona-router: Si ambos existen, deben coincidir
-      let zonaRouterCoinciden = false;
-      if (zonaName && routerName) {
-        zonaRouterCoinciden = String(zonaName).trim() === String(routerName).trim();
-        logger.info(`[Geonet] Coincidencia zona-router: ${zonaRouterCoinciden}`);
-      }
-
-      // Autoselección de router según zona
-      if (zonaName && routerOptions.length > 0) {
-        // Buscar router cuyo texto coincida exactamente con zona
-        const routerMatch = routerOptions.find(o => o.text.trim() === String(zonaName).trim());
-        if (routerMatch) {
-          routerValue = routerMatch.value;
-          logger.info(`[Geonet] Router autoseleccionado por zona: ${routerMatch.text}`);
-        } else {
-          // Fallback: usar routerName si existe
-          routerValue = this.findOptionIdObj(routerOptions, String(routerName));
-          if (!routerValue) routerValue = routerOptions.find(o => !o.text.includes('---------'))?.value || '';
-          logger.info(`[Geonet] Router fallback seleccionado: ${routerValue}`);
-        }
-      } else if (routerName && routerOptions.length > 0) {
-        routerValue = this.findOptionIdObj(routerOptions, String(routerName));
-        if (!routerValue) routerValue = routerOptions.find(o => !o.text.includes('---------'))?.value || '';
-        logger.info(`[Geonet] Router seleccionado por parámetro: ${routerValue}`);
-      }
-
-      // Selección de zona
-      if (zonaOptions.length > 0) {
-        if (zonaName && String(zonaName).trim()) {
-          const mappedTarget = ZONE_MAPPING[String(zonaName).trim()] || String(zonaName).trim();
-          const directMatch = zonaOptions.find(o => o.text.trim().toLowerCase() === mappedTarget.toLowerCase());
-          if (directMatch) {
-            zonaValue = directMatch.value;
-            logger.info(`[Geonet] Zona seleccionada por coincidencia directa: ${directMatch.text}`);
-          } else {
-            const extractZoneId = (s: string) => s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
-            const targetId = extractZoneId(mappedTarget);
-            const targetTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
-            let bestZoneValue = '';
-            let bestZoneScore = -1;
-            zonaOptions.forEach(opt => {
-              if (!opt.value || opt.text.includes('---------')) return;
-              const optId = extractZoneId(opt.text);
-              const optCleanName = getStrictName(opt.text);
-              if (targetId && optId && targetId !== optId) return;
-              let score = 0;
-              targetTokens.forEach(t => { if (optCleanName.includes(t)) score += 500; });
-              if (targetId && optId && targetId === optId) score += 1000;
-              if (score > bestZoneScore) { bestZoneScore = score; bestZoneValue = opt.value; }
-            });
-            zonaValue = bestZoneScore >= 100 ? bestZoneValue : (zonaOptions.find(o => !o.text.includes('---------'))?.value || '');
-            logger.info(`[Geonet] Zona seleccionada por score: ${zonaValue}`);
-          }
-        } else {
-          zonaValue = zonaOptions.find(o => !o.text.includes('---------'))?.value || '';
-          logger.info(`[Geonet] Zona seleccionada por default: ${zonaValue}`);
-        }
-      }
-
-    if (apOptions.length > 0) {
-      if (apName && String(apName).trim()) {
-        const mappedTarget = AP_MAPPING[String(apName).trim()] || String(apName).trim();
-        const directMatch = apOptions.find(o => o.text.trim().toLowerCase() === mappedTarget.toLowerCase());
-
-        if (directMatch) {
-          apValue = directMatch.value;
-        } else {
-          const extractMeta = (s: string) => ({
-            zone: s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1],
-            cto: s.match(/(?:cto|nap|odf|spliter|splitter)\s*[-:._]?\s*(\d+)/i)?.[1],
-            tower: s.match(/(?:torre|edificio|block)\s*[-:._]?\s*([a-z0-9]+)/i)?.[1]?.toLowerCase()
-          });
-
-          const tMeta = extractMeta(mappedTarget);
-          const tTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
-          let bestApValue = '';
-          let bestApScore = -1;
-
-          apOptions.forEach(opt => {
-            if (!opt.value || opt.text.includes('---------')) return;
-            const oMeta = extractMeta(opt.text);
-            const oCleanName = getStrictName(opt.text);
-
-            if (tTokens.length > 0 && !tTokens.some(t => oCleanName.includes(t))) return;
-            if (tMeta.zone && oMeta.zone && tMeta.zone !== oMeta.zone) return;
-            if (tMeta.cto && oMeta.cto && tMeta.cto !== oMeta.cto) return;
-
-            let score = 1000;
-            tTokens.forEach(t => { if (oCleanName.includes(t)) score += 100; });
-            if (tMeta.tower && oMeta.tower && tMeta.tower === oMeta.tower) score += 500;
-            if (tMeta.cto && oMeta.cto && tMeta.cto === oMeta.cto) score += 300;
-
-            if (score > bestApScore) { bestApScore = score; bestApValue = opt.value; }
-          });
-          apValue = bestApScore >= 1000 ? bestApValue : (apOptions.find(o => !o.text.includes('---------'))?.value || '');
-        }
+    // ZONA
+    if (zonaName && zonaOptions.length > 0) {
+      const found = zonaOptions.find(o => o.value === zonaName);
+      if (found) {
+        zonaValue = found.value;
+        logger.info(`[Geonet] Zona seleccionada: texto='${found.text}', value='${found.value}'`);
       } else {
-        apValue = apOptions.find(o => !o.text.includes('---------'))?.value || '';
+        logger.warn(`[Geonet] Valor de zona '${zonaName}' no encontrado en opciones`);
+        zonaValue = '';
+      }
+    }
+
+    // ROUTER
+    if (routerName && routerOptions.length > 0) {
+      const found = routerOptions.find(o => o.value === routerName);
+      if (found) {
+        routerValue = found.value;
+        logger.info(`[Geonet] Router seleccionado: texto='${found.text}', value='${found.value}'`);
+      } else {
+        logger.warn(`[Geonet] Valor de router '${routerName}' no encontrado en opciones`);
+        routerValue = '';
+      }
+    }
+
+    // AP/CTO
+    if (apName && apOptions.length > 0) {
+      const found = apOptions.find(o => o.value === apName);
+      if (found) {
+        apValue = found.value;
+        logger.info(`[Geonet] AP/CTO seleccionado: texto='${found.text}', value='${found.value}'`);
+      } else {
+        logger.warn(`[Geonet] Valor de AP/CTO '${apName}' no encontrado en opciones`);
+        apValue = '';
       }
     }
 
