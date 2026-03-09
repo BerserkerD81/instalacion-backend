@@ -858,44 +858,46 @@ export class InstallationService extends GeonetBaseService {
       let zonaTarget = params.zonaName ? (ZONE_MAPPING[String(params.zonaName).trim()] || String(params.zonaName).trim()) : '';
       let routerTarget = params.routerName ? (ZONE_MAPPING[String(params.routerName).trim()] || String(params.routerName).trim()) : '';
 
-      // Selección de zona usando el diccionario
-      if (zonaOptions.length > 0 && zonaTarget) {
-        logger.info(`[Activación] Comparando zona: target='${zonaTarget}'`);
-        const directMatch = zonaOptions.find(o => o.text.trim().toLowerCase() === zonaTarget.toLowerCase());
-        if (directMatch) {
-          zonaValue = directMatch.value;
-          logger.info(`[Activación] Zona seleccionada: '${directMatch.text}'`);
+      // Selección de zona usando SOLO el diccionario ZONE_MAPPING
+      if (zonaOptions.length > 0 && params.zonaName) {
+        const mappedZona = ZONE_MAPPING[String(params.zonaName).trim()];
+        logger.info(`[Activación] Comparando zona: target='${mappedZona}'`);
+        if (mappedZona) {
+          const directMatch = zonaOptions.find(o => o.text.trim() === mappedZona);
+          if (directMatch) {
+            zonaValue = directMatch.value;
+            logger.info(`[Activación] Zona seleccionada: texto='${directMatch.text}', value='${directMatch.value}'`);
+          } else {
+            logger.warn(`[Activación] Zona del diccionario no encontrada en opciones: '${mappedZona}'`);
+            zonaValue = '';
+          }
         } else {
-          logger.info('[Activación] Zona no encontrada exacta, usando primera opción válida');
-          zonaValue = zonaOptions.find(z => !z.text.includes('---------'))?.value || '';
+          logger.warn(`[Activación] ZonaName '${params.zonaName}' no está en ZONE_MAPPING`);
+          zonaValue = '';
         }
-      } else if (zonaOptions.length > 0) {
-        zonaValue = zonaOptions.find(z => !z.text.includes('---------'))?.value || '';
+      } else {
+        zonaValue = '';
       }
 
-      // Selección de router usando el diccionario (igual que zona)
-      if (routerOptions.length > 0 && routerTarget) {
-        logger.info(`[Activación] Comparando router: target='${routerTarget}'`);
-        const directMatch = routerOptions.find(o => o.text.trim().toLowerCase() === routerTarget.toLowerCase());
-        if (directMatch) {
-          routerValue = directMatch.value;
-          logger.info(`[Activación] Router seleccionado: '${directMatch.text}'`);
+      // Selección de router usando SOLO el diccionario ZONE_MAPPING
+      if (routerOptions.length > 0 && params.zonaName) {
+        const mappedRouter = ZONE_MAPPING[String(params.zonaName).trim()];
+        logger.info(`[Activación] Comparando router: target='${mappedRouter}'`);
+        if (mappedRouter) {
+          const directMatch = routerOptions.find(o => o.text.trim() === mappedRouter);
+          if (directMatch) {
+            routerValue = directMatch.value;
+            logger.info(`[Activación] Router seleccionado: texto='${directMatch.text}', value='${directMatch.value}'`);
+          } else {
+            logger.warn(`[Activación] Router del diccionario no encontrado en opciones: '${mappedRouter}'`);
+            routerValue = '';
+          }
         } else {
-          logger.info('[Activación] Router no encontrado exacto, usando primera opción válida');
-          routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
+          logger.warn(`[Activación] ZonaName '${params.zonaName}' no está en ZONE_MAPPING para router`);
+          routerValue = '';
         }
-      } else if (routerOptions.length > 0 && zonaTarget) {
-        logger.info(`[Activación] Comparando router con zonaTarget: target='${zonaTarget}'`);
-        const directMatch = routerOptions.find(o => o.text.trim().toLowerCase() === zonaTarget.toLowerCase());
-        if (directMatch) {
-          routerValue = directMatch.value;
-          logger.info(`[Activación] Router seleccionado por zona: '${directMatch.text}'`);
-        } else {
-          logger.info('[Activación] Router no encontrado exacto por zona, usando primera opción válida');
-          routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
-        }
-      } else if (routerOptions.length > 0) {
-        routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
+      } else {
+        routerValue = '';
       }
 
       logger.info(`[Activación] Valores seleccionados (diccionario): zonaValue=${zonaValue}, routerValue=${routerValue}`);
