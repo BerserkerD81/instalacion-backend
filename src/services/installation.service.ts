@@ -846,6 +846,7 @@ export class InstallationService extends GeonetBaseService {
       const techOptions = await this.extractSelectOptions(page, 'select[name*="tecnico" i], select[id*="tecnico" i]');
       const planOptions = await this.extractSelectOptions(page, 'select[name*="plan" i], select[id*="plan" i]');
 
+
       logger.info('[Activación] Extrayendo opciones de zona y router...');
       const zonaOptions = await this.extractSelectOptions(page, 'select[name*="zona_cliente" i]');
       const routerOptions = await this.extractSelectOptions(page, 'select[name*="router_cliente" i]');
@@ -853,33 +854,70 @@ export class InstallationService extends GeonetBaseService {
       let zonaValue = '';
       let routerValue = '';
 
-      // Sincronizar zona y router: ambos deben tener el mismo texto
-      if (zonaOptions.length > 0 && routerOptions.length > 0) {
-        // Buscar opción que coincida en ambos
-        for (const zonaOpt of zonaOptions) {
-          const matchRouter = routerOptions.find(r => r.text.trim() === zonaOpt.text.trim());
-          if (matchRouter) {
-            zonaValue = zonaOpt.value;
-            routerValue = matchRouter.value;
-            logger.info(`[Activación] Sincronizado zona y router: ${zonaOpt.text}`);
-            break;
-          }
+      // Usar ZONE_MAPPING y AP_MAPPING para la selección
+      let zonaTarget = params.zonaName ? (ZONE_MAPPING[String(params.zonaName).trim()] || String(params.zonaName).trim()) : '';
+      let routerTarget = params.routerName ? (ZONE_MAPPING[String(params.routerName).trim()] || String(params.routerName).trim()) : '';
+
+      // Selección de zona usando el diccionario
+      if (zonaOptions.length > 0 && zonaTarget) {
+        logger.info(`[Activación] Comparando zona: target='${zonaTarget}'`);
+        const directMatch = zonaOptions.find(o => o.text.trim().toLowerCase() === zonaTarget.toLowerCase());
+        if (directMatch) {
+          zonaValue = directMatch.value;
+          logger.info(`[Activación] Zona seleccionada: '${directMatch.text}'`);
+        } else {
+          logger.info('[Activación] Zona no encontrada exacta, usando primera opción válida');
+          zonaValue = zonaOptions.find(z => !z.text.includes('---------'))?.value || '';
         }
-        // Si no hay coincidencia, autoseleccionar router según zona
-        if (!routerValue && zonaValue) {
-          const zonaText = zonaOptions.find(z => z.value === zonaValue)?.text.trim();
-          const routerMatch = routerOptions.find(r => r.text.trim() === zonaText);
-          if (routerMatch) {
-            routerValue = routerMatch.value;
-            logger.info(`[Activación] Autoseleccionado router por zona: ${routerMatch.text}`);
-          }
-        }
-        // Si aún no hay valor, seleccionar el primero válido
-        if (!zonaValue) zonaValue = zonaOptions.find(z => !z.text.includes('---------'))?.value || '';
-        if (!routerValue) routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
+      } else if (zonaOptions.length > 0) {
+        zonaValue = zonaOptions.find(z => !z.text.includes('---------'))?.value || '';
       }
 
-      logger.info(`[Activación] Valores seleccionados: zonaValue=${zonaValue}, routerValue=${routerValue}`);
+      // Selección de router usando el diccionario (igual que zona)
+      if (routerOptions.length > 0 && routerTarget) {
+        logger.info(`[Activación] Comparando router: target='${routerTarget}'`);
+        const directMatch = routerOptions.find(o => o.text.trim().toLowerCase() === routerTarget.toLowerCase());
+        if (directMatch) {
+          routerValue = directMatch.value;
+          logger.info(`[Activación] Router seleccionado: '${directMatch.text}'`);
+        } else {
+          logger.info('[Activación] Router no encontrado exacto, usando primera opción válida');
+          routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
+        }
+      } else if (routerOptions.length > 0 && zonaTarget) {
+        logger.info(`[Activación] Comparando router con zonaTarget: target='${zonaTarget}'`);
+        const directMatch = routerOptions.find(o => o.text.trim().toLowerCase() === zonaTarget.toLowerCase());
+        if (directMatch) {
+          routerValue = directMatch.value;
+          logger.info(`[Activación] Router seleccionado por zona: '${directMatch.text}'`);
+        } else {
+          logger.info('[Activación] Router no encontrado exacto por zona, usando primera opción válida');
+          routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
+        }
+      } else if (routerOptions.length > 0) {
+        routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
+      }
+
+      logger.info(`[Activación] Valores seleccionados (diccionario): zonaValue=${zonaValue}, routerValue=${routerValue}`);
+
+
+      // Selección de AP/CTO usando AP_MAPPING
+      const apOptions = await this.extractSelectOptions(page, 'select[name*="ap_cliente" i]');
+      let apValue = '';
+      let apTarget = params.apName ? (AP_MAPPING[String(params.apName).trim()] || String(params.apName).trim()) : '';
+      if (apOptions.length > 0 && apTarget) {
+        logger.info(`[Activación] Comparando AP/CTO: target='${apTarget}'`);
+        const directMatch = apOptions.find(o => o.text.trim().toLowerCase() === apTarget.toLowerCase());
+        if (directMatch) {
+          apValue = directMatch.value;
+          logger.info(`[Activación] AP/CTO seleccionado: '${directMatch.text}'`);
+        } else {
+          logger.info('[Activación] AP/CTO no encontrado exacto, usando primera opción válida');
+          apValue = apOptions.find(a => !a.text.includes('---------'))?.value || '';
+        }
+      } else if (apOptions.length > 0) {
+        apValue = apOptions.find(a => !a.text.includes('---------'))?.value || '';
+      }
 
       const technicianId = this.findOptionIdObj(techOptions, technicianName);
       const planId = this.findOptionIdObj(planOptions, effectivePlanName);
@@ -897,6 +935,7 @@ export class InstallationService extends GeonetBaseService {
         routerValue
       });
 
+
       const { status: activationPostStatus, ip: firstAvailableIp } = await this.submitGeonetActivation({
         ...params,
         page,
@@ -905,7 +944,8 @@ export class InstallationService extends GeonetBaseService {
         planId,
         installationRequestId: resolvedRequestId,
         zonaName: zonaValue,
-        routerName: routerValue
+        routerName: routerValue,
+        apName: apValue
       });
 
       // --- Marcar como activado para evitar duplicados ---
