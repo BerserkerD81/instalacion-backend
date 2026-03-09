@@ -842,8 +842,44 @@ export class InstallationService extends GeonetBaseService {
 
       await this.safeGoto(page, activationLink);
 
+      logger.info('[Activación] Extrayendo opciones de técnico y plan...');
       const techOptions = await this.extractSelectOptions(page, 'select[name*="tecnico" i], select[id*="tecnico" i]');
       const planOptions = await this.extractSelectOptions(page, 'select[name*="plan" i], select[id*="plan" i]');
+
+      logger.info('[Activación] Extrayendo opciones de zona y router...');
+      const zonaOptions = await this.extractSelectOptions(page, 'select[name*="zona_cliente" i]');
+      const routerOptions = await this.extractSelectOptions(page, 'select[name*="router_cliente" i]');
+
+      let zonaValue = '';
+      let routerValue = '';
+
+      // Sincronizar zona y router: ambos deben tener el mismo texto
+      if (zonaOptions.length > 0 && routerOptions.length > 0) {
+        // Buscar opción que coincida en ambos
+        for (const zonaOpt of zonaOptions) {
+          const matchRouter = routerOptions.find(r => r.text.trim() === zonaOpt.text.trim());
+          if (matchRouter) {
+            zonaValue = zonaOpt.value;
+            routerValue = matchRouter.value;
+            logger.info(`[Activación] Sincronizado zona y router: ${zonaOpt.text}`);
+            break;
+          }
+        }
+        // Si no hay coincidencia, autoseleccionar router según zona
+        if (!routerValue && zonaValue) {
+          const zonaText = zonaOptions.find(z => z.value === zonaValue)?.text.trim();
+          const routerMatch = routerOptions.find(r => r.text.trim() === zonaText);
+          if (routerMatch) {
+            routerValue = routerMatch.value;
+            logger.info(`[Activación] Autoseleccionado router por zona: ${routerMatch.text}`);
+          }
+        }
+        // Si aún no hay valor, seleccionar el primero válido
+        if (!zonaValue) zonaValue = zonaOptions.find(z => !z.text.includes('---------'))?.value || '';
+        if (!routerValue) routerValue = routerOptions.find(r => !r.text.includes('---------'))?.value || '';
+      }
+
+      logger.info(`[Activación] Valores seleccionados: zonaValue=${zonaValue}, routerValue=${routerValue}`);
 
       const technicianId = this.findOptionIdObj(techOptions, technicianName);
       const planId = this.findOptionIdObj(planOptions, effectivePlanName);
@@ -851,7 +887,16 @@ export class InstallationService extends GeonetBaseService {
       if (!technicianId) throw Object.assign(new Error('No se encontró técnico'), { statusCode: 404 });
       if (!planId) throw Object.assign(new Error('No se encontró plan'), { statusCode: 404 });
 
-      // Ahora delegamos la responsabilidad de buscar la IP a submitGeonetActivation
+      // Logs de todo el proceso
+      logger.info('[Activación] Iniciando submitGeonetActivation', {
+        activationLink,
+        technicianId,
+        planId,
+        installationRequestId: resolvedRequestId,
+        zonaValue,
+        routerValue
+      });
+
       const { status: activationPostStatus, ip: firstAvailableIp } = await this.submitGeonetActivation({
         ...params,
         page,
@@ -859,6 +904,8 @@ export class InstallationService extends GeonetBaseService {
         technicianId,
         planId,
         installationRequestId: resolvedRequestId,
+        zonaName: zonaValue,
+        routerName: routerValue
       });
 
       // --- Marcar como activado para evitar duplicados ---
@@ -869,10 +916,18 @@ export class InstallationService extends GeonetBaseService {
           geonetActivated: true,
           geonetClientId: geonetClientId ? String(geonetClientId) : null,
         } as any);
-        logger.info(`lookupPreinstallationActivation: marcado geonetActivated=true, geonetClientId=${geonetClientId} para request ${resolvedRequestId}`);
+        logger.info(`[Activación] marcado geonetActivated=true, geonetClientId=${geonetClientId} para request ${resolvedRequestId}`);
       } catch (saveErr: any) {
-        logger.error(`lookupPreinstallationActivation: no se pudo guardar geonetActivated: ${saveErr?.message}`);
+        logger.error(`[Activación] no se pudo guardar geonetActivated: ${saveErr?.message}`);
       }
+
+      logger.info('[Activación] Proceso completado', {
+        activationLink,
+        technicianId,
+        planId,
+        firstAvailableIp,
+        activationPostStatus
+      });
 
       return { activationLink, technicianId, planId, firstAvailableIp, activationPostStatus };
     } finally {
@@ -1033,42 +1088,69 @@ export class InstallationService extends GeonetBaseService {
     };
 
     // --- Lógica de mapeo original (Router, Zona, AP) ---
-    if (routerName && routerOptions.length > 0) {
-      routerValue = this.findOptionIdObj(routerOptions, String(routerName));
-      if (!routerValue) routerValue = routerOptions.find(o => !o.text.includes('---------'))?.value || '';
-    }
+      // LOG: Opciones disponibles
+      logger.info(`[Geonet] Opciones de router: ${routerOptions.map(o => o.text).join(', ')}`);
+      logger.info(`[Geonet] Opciones de zona: ${zonaOptions.map(o => o.text).join(', ')}`);
+      logger.info(`[Geonet] Parámetros recibidos: zonaName='${zonaName}', routerName='${routerName}'`);
 
-    if (zonaOptions.length > 0) {
-      if (zonaName && String(zonaName).trim()) {
-        const mappedTarget = ZONE_MAPPING[String(zonaName).trim()] || String(zonaName).trim();
-        const directMatch = zonaOptions.find(o => o.text.trim().toLowerCase() === mappedTarget.toLowerCase());
-
-        if (directMatch) {
-          zonaValue = directMatch.value;
-        } else {
-          const extractZoneId = (s: string) => s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
-          const targetId = extractZoneId(mappedTarget);
-          const targetTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
-          let bestZoneValue = '';
-          let bestZoneScore = -1;
-
-          zonaOptions.forEach(opt => {
-            if (!opt.value || opt.text.includes('---------')) return;
-            const optId = extractZoneId(opt.text);
-            const optCleanName = getStrictName(opt.text);
-
-            if (targetId && optId && targetId !== optId) return;
-            let score = 0;
-            targetTokens.forEach(t => { if (optCleanName.includes(t)) score += 500; });
-            if (targetId && optId && targetId === optId) score += 1000;
-            if (score > bestZoneScore) { bestZoneScore = score; bestZoneValue = opt.value; }
-          });
-          zonaValue = bestZoneScore >= 100 ? bestZoneValue : (zonaOptions.find(o => !o.text.includes('---------'))?.value || '');
-        }
-      } else {
-        zonaValue = zonaOptions.find(o => !o.text.includes('---------'))?.value || '';
+      // Sincronización zona-router: Si ambos existen, deben coincidir
+      let zonaRouterCoinciden = false;
+      if (zonaName && routerName) {
+        zonaRouterCoinciden = String(zonaName).trim() === String(routerName).trim();
+        logger.info(`[Geonet] Coincidencia zona-router: ${zonaRouterCoinciden}`);
       }
-    }
+
+      // Autoselección de router según zona
+      if (zonaName && routerOptions.length > 0) {
+        // Buscar router cuyo texto coincida exactamente con zona
+        const routerMatch = routerOptions.find(o => o.text.trim() === String(zonaName).trim());
+        if (routerMatch) {
+          routerValue = routerMatch.value;
+          logger.info(`[Geonet] Router autoseleccionado por zona: ${routerMatch.text}`);
+        } else {
+          // Fallback: usar routerName si existe
+          routerValue = this.findOptionIdObj(routerOptions, String(routerName));
+          if (!routerValue) routerValue = routerOptions.find(o => !o.text.includes('---------'))?.value || '';
+          logger.info(`[Geonet] Router fallback seleccionado: ${routerValue}`);
+        }
+      } else if (routerName && routerOptions.length > 0) {
+        routerValue = this.findOptionIdObj(routerOptions, String(routerName));
+        if (!routerValue) routerValue = routerOptions.find(o => !o.text.includes('---------'))?.value || '';
+        logger.info(`[Geonet] Router seleccionado por parámetro: ${routerValue}`);
+      }
+
+      // Selección de zona
+      if (zonaOptions.length > 0) {
+        if (zonaName && String(zonaName).trim()) {
+          const mappedTarget = ZONE_MAPPING[String(zonaName).trim()] || String(zonaName).trim();
+          const directMatch = zonaOptions.find(o => o.text.trim().toLowerCase() === mappedTarget.toLowerCase());
+          if (directMatch) {
+            zonaValue = directMatch.value;
+            logger.info(`[Geonet] Zona seleccionada por coincidencia directa: ${directMatch.text}`);
+          } else {
+            const extractZoneId = (s: string) => s.match(/(?:zona|z|vlan)\s*[-:._]?\s*(\d+)/i)?.[1];
+            const targetId = extractZoneId(mappedTarget);
+            const targetTokens = getStrictName(mappedTarget).split(' ').filter(x => x.length > 2);
+            let bestZoneValue = '';
+            let bestZoneScore = -1;
+            zonaOptions.forEach(opt => {
+              if (!opt.value || opt.text.includes('---------')) return;
+              const optId = extractZoneId(opt.text);
+              const optCleanName = getStrictName(opt.text);
+              if (targetId && optId && targetId !== optId) return;
+              let score = 0;
+              targetTokens.forEach(t => { if (optCleanName.includes(t)) score += 500; });
+              if (targetId && optId && targetId === optId) score += 1000;
+              if (score > bestZoneScore) { bestZoneScore = score; bestZoneValue = opt.value; }
+            });
+            zonaValue = bestZoneScore >= 100 ? bestZoneValue : (zonaOptions.find(o => !o.text.includes('---------'))?.value || '');
+            logger.info(`[Geonet] Zona seleccionada por score: ${zonaValue}`);
+          }
+        } else {
+          zonaValue = zonaOptions.find(o => !o.text.includes('---------'))?.value || '';
+          logger.info(`[Geonet] Zona seleccionada por default: ${zonaValue}`);
+        }
+      }
 
     if (apOptions.length > 0) {
       if (apName && String(apName).trim()) {
@@ -1116,6 +1198,7 @@ export class InstallationService extends GeonetBaseService {
     // INTERACCIÓN EN LA UI PARA REFRESCAR LA LISTA DE IPs (OPTIMIZADO)
     // ==============================================================================
     logger.info(`[Puppeteer] Seleccionando Zona ID: ${zonaValue} y Router ID: ${routerValue} para refrescar IP...`);
+    logger.info(`[Geonet] Proceso de pasar de preinstalación a instalación: zona='${zonaName}', router='${routerName}', zonaValue='${zonaValue}', routerValue='${routerValue}'`);
     
     await page.evaluate((rVal, zVal, aVal) => {
       const triggerChange = (selector: string, val: string) => {
