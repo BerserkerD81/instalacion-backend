@@ -1256,6 +1256,46 @@ export class InstallationService extends GeonetBaseService {
       ? `${baseComments}\n\n[Nota Bot]: ${incomingComments}`.trim()
       : baseComments;
 
+    // --- LOG DETALLADO DE DATOS ENVIADOS A GEONET ---
+    const formFields = {
+      'usr-first_name': request.firstName || '',
+      'usr-last_name': request.lastName || '',
+      'perfil-cedula': ciNormalized,
+      'usr-email': request.email || '',
+      'perfil-direccion': request.address || '',
+      'perfil-external_id': externalIdBase,
+      'cliente-coordenadas': request.coordinates || '',
+      'perfil-localidad': request.neighborhood || '',
+      'perfil-ciudad': request.city || '',
+      'perfil-telefono': phoneValue,
+      'cliente-fecha_registro': this.formatDateTimeCL(request.createdAt),
+      'cliente-fecha_instalacion': this.formatDateTimeCL(request.agreedInstallationDate),
+      'cliente-costo_instalacion': '0',
+      'cliente-comentarios': commentsToSend,
+      'cliente-cliente_rb': externalIdBase,
+      'cliente-ip': finalIp,
+      'cliente-router_cliente': routerValue,
+      'cliente-zona_cliente': zonaValue,
+      'cliente-plan_internet': planId,
+      'cliente-tecnico': technicianId,
+      'cliente-estado_instalacion': '1',
+      'cliente-ap_cliente': apValue,
+      'usr-password': '{dni_cliente}',
+      'cliente-external_id': externalIdBase,
+      'perfil-nombre_facturacion': fullName,
+      'perfil-tipo_persona': '2',
+      'perfil-tipo_identificacion': '0',
+      'perfil-rfc': ciNormalized,
+      'perfil-cp': request.postalCode || '',
+      'perfil-direccion_facturacion': request.address || '',
+      'perfil-email_facturacion': request.email || '',
+      'perfil-representante_legal': fullName,
+      'perfil-cedula_facturacion': ciNormalized,
+      'perfil-retenciones': '0.00',
+      'perfil-retencion_iva': '19.0'
+    };
+    logger.warn('[DEBUG ACTIVACION GEONET] Datos enviados a Geonet:', formFields);
+
     const result = await page.evaluate(async (args) => {
       try {
         const csrf = (document.querySelector('input[name="csrfmiddlewaretoken"]') as HTMLInputElement)?.value || '';
@@ -1277,43 +1317,7 @@ export class InstallationService extends GeonetBaseService {
       }
     }, {
       activationLink,
-      formFields: {
-        'usr-first_name': request.firstName || '',
-        'usr-last_name': request.lastName || '',
-        'perfil-cedula': ciNormalized,
-        'usr-email': request.email || '',
-        'perfil-direccion': request.address || '',
-        'perfil-external_id': externalIdBase,
-        'cliente-coordenadas': request.coordinates || '',
-        'perfil-localidad': request.neighborhood || '',
-        'perfil-ciudad': request.city || '',
-        'perfil-telefono': phoneValue,
-        'cliente-fecha_registro': this.formatDateTimeCL(request.createdAt),
-        'cliente-fecha_instalacion': this.formatDateTimeCL(request.agreedInstallationDate),
-        'cliente-costo_instalacion': '0',
-        'cliente-comentarios': commentsToSend,
-        'cliente-cliente_rb': externalIdBase,
-        'cliente-ip': finalIp,
-        'cliente-router_cliente': routerValue,
-        'cliente-zona_cliente': zonaValue,
-        'cliente-plan_internet': planId,
-        'cliente-tecnico': technicianId,
-        'cliente-estado_instalacion': '1',
-        'cliente-ap_cliente': apValue,
-        'usr-password': '{dni_cliente}',
-        'cliente-external_id': externalIdBase,
-        'perfil-nombre_facturacion': fullName,
-        'perfil-tipo_persona': '2',
-        'perfil-tipo_identificacion': '0',
-        'perfil-rfc': ciNormalized,
-        'perfil-cp': request.postalCode || '',
-        'perfil-direccion_facturacion': request.address || '',
-        'perfil-email_facturacion': request.email || '',
-        'perfil-representante_legal': fullName,
-        'perfil-cedula_facturacion': ciNormalized,
-        'perfil-retenciones': '0.00',
-        'perfil-retencion_iva': '19.0'
-      }
+      formFields
     });
 
     const activationSuccess = !String(result.url || '').includes('/activar/');
