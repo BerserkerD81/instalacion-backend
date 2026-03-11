@@ -96,6 +96,7 @@ const startServer = async () => {
     console.log('Conectando a la base de datos...');
     await initializeDataSource();
     console.log('✅ Base de datos inicializada correctamente.');
+    runDailyTechSync(); // Ejecutar la sincronización de técnicos al iniciar el servidor
 
     // 2. INICIAR SCHEDULERS (Solo cuando la BD ya está lista)
     console.log('Iniciando tareas programadas (Schedulers)...');
