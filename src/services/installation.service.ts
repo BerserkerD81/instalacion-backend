@@ -1467,11 +1467,12 @@ public async agregarOtroServicioGeonet(params: AgregarOtroServicioInput): Promis
       fechaFin:    params.fechaFin,
     });
 
-    // ── 4. POST via fetch (el CSRF lo extrae del DOM en el mismo contexto) ─
+    // ── 4. POST via fetch (el CSRF lo extrae del DOM en el mismo contexto)
+    // Ahora devolvemos también un `bodySnippet` para poder depurar responses 5xx/errores.
     const result = await page.evaluate(async (args) => {
       try {
         const formEl = document.querySelector('form#agregar-otro-servicio') as HTMLFormElement | null;
-        if (!formEl) return { status: 502, error: 'Formulario no encontrado', finalUrl: '', errors: [] };
+        if (!formEl) return { status: 502, error: 'Formulario no encontrado', finalUrl: '', errors: [], bodySnippet: document.body.innerText?.substring(0, 800) || '' };
 
         const formData = new FormData(formEl);
         // El CSRF ya está en el FormData porque viene del hidden input del DOM
@@ -1480,6 +1481,9 @@ public async agregarOtroServicioGeonet(params: AgregarOtroServicioInput): Promis
         formData.set('csrfmiddlewaretoken', csrf);
 
         const res = await fetch(args.formUrl, { method: 'POST', body: formData });
+        const resText = await res.text();
+
+        const doc = new DOMParser().parseFromString(resText, 'text/html');
 
         const effectiveStatus = (res.redirected && !res.url.includes('/agregar-otro-producto/'))
           ? 200
@@ -1489,15 +1493,14 @@ public async agregarOtroServicioGeonet(params: AgregarOtroServicioInput): Promis
 
         let errors: string[] = [];
         if (effectiveStatus === 422) {
-          const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
           errors = Array.from(doc.querySelectorAll('.alert-danger,.errorlist,.text-danger,.help-block'))
             .map(el => el.textContent?.trim() ?? '')
             .filter(Boolean);
         }
 
-        return { status: effectiveStatus, finalUrl: res.url, errors };
+        return { status: effectiveStatus, finalUrl: res.url, errors, bodySnippet: resText.substring(0, 2000) };
       } catch (e: any) {
-        return { status: 500, error: e.toString(), finalUrl: '', errors: [] };
+        return { status: 500, error: e.toString(), finalUrl: '', errors: [], bodySnippet: document.body.innerText?.substring(0, 800) || '' };
       }
     }, { formUrl });
 
@@ -1506,6 +1509,14 @@ public async agregarOtroServicioGeonet(params: AgregarOtroServicioInput): Promis
       `[agregarOtroServicioGeonet] user="${params.externalIdOrUser}" ` +
       `status=${result.status} t=${Date.now() - start}ms`
     );
+
+    // Si hay un error 5xx o excepción, añadimos información de depuración al log
+    if (result.status >= 500 || result.error) {
+      logger.error(`[agregarOtroServicioGeonet] ERROR details for user="${params.externalIdOrUser}": status=${result.status} error=${result.error || 'none'}`);
+      if (result.bodySnippet) {
+        logger.error(`[agregarOtroServicioGeonet] Response snippet:\n${result.bodySnippet}`);
+      }
+    }
 
     return {
       status:     result.status,
