@@ -47,6 +47,11 @@ router.patch(
 	'/geonet/installations/:externalIdOrUser/:installationId',
 	(req, res) => installationController.editarInstalacionGeonet(req, res)
 );
+// Geonet: agregar otro producto/servicio a un cliente existente
+router.post(
+  '/geonet/clients/:externalIdOrUser/otros-servicios',
+  (req, res) => installationController.agregarOtroServicioGeonet(req, res)
+);
 
 // Geonet: delete installation by externalId (scrape form + POST)
 router.delete('/geonet/installations/:externalId', (req, res) => installationController.eliminarInstalacionGeonet(req, res));

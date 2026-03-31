@@ -89,6 +89,21 @@ export type GeonetImportOptions = {
   username?: string;
   password?: string;
 };
+type AgregarOtroServicioInput = {
+  externalIdOrUser: string;
+  nombre: string;
+  descripcion?: string;
+  cantidad?: number;
+  total: number;        // precio por unidad
+  tipoPago?: number | string; // 100=Recurrente, 200=Un solo Pago, 2-24=mensualidades
+  fechaInicio?: string; // DD/MM/YYYY esperado por Geonet
+  fechaFin?: string;    // DD/MM/YYYY
+  uuid?: string;
+  mac?: string;
+  numSerie?: string;
+  imagen?: string;
+  categoria?: string;
+};
 
 // =========================================================================
 // TABLAS DE CONVERSIÓN: SMARTOLT -> GEONET/WISPHUB
@@ -1353,6 +1368,228 @@ export class InstallationService extends GeonetBaseService {
 
     return { status: result.status, ip: finalIp };
   }
+  /**
+ * Agrega un producto/servicio adicional a un cliente ya instalado en Geonet.
+ * Hace scraping del formulario en:
+ *   /clientes/agregar-otro-producto/{externalIdOrUser}/
+ *
+ * Si proporcionas `uuid` y `categoria` el formulario se rellena con los campos
+ * ocultos que Geonet usa para identificar el artículo del almacén; si no, basta
+ * con `nombre` y `total` para un servicio libre.
+ */
+public async agregarOtroServicioGeonet(params: AgregarOtroServicioInput): Promise<any> {
+  const start = Date.now();
+  const { page } = await this.openPage();
+
+  try {
+    if (!await this.ensureSession(page)) throw new Error('Auth falló');
+
+    const encodedUser = encodeURIComponent(params.externalIdOrUser);
+    const formUrl     = `${GEONET_BASE_URL}/clientes/agregar-otro-producto/${encodedUser}/`;
+
+    await this.safeGoto(page, formUrl, { waitForSelector: 'form#agregar-otro-servicio' });
+
+    const formExists = await page.$('form#agregar-otro-servicio');
+    if (!formExists) {
+      const snippet = await page.evaluate(() => document.body.innerText?.substring(0, 300) || '');
+      throw Object.assign(
+        new Error(`Formulario no encontrado para "${params.externalIdOrUser}". Respuesta: ${snippet}`),
+        { statusCode: 404 }
+      );
+    }
+
+    // ── 1. Obtener cookies de sesión actuales de Puppeteer ─────────────────
+    const sessionCookies = await page.cookies();
+
+    // ── 2. Si no viene uuid, buscarlo en el almacén via Axios ──────────────
+    let articulo: Awaited<ReturnType<typeof this.buscarArticuloEnAlmacen>> = null;
+
+    if (!params.uuid && params.nombre) {
+      articulo = await this.buscarArticuloEnAlmacen(params.nombre, sessionCookies);
+    }
+
+    // Resolver valores finales (parámetro explícito tiene prioridad sobre autocomplete)
+    const uuid      = params.uuid      ?? articulo?.uuid      ?? '';
+    const categoria = params.categoria ?? articulo?.categoria ?? '';
+    const mac       = params.mac       ?? articulo?.mac       ?? '';
+    const numSerie  = params.numSerie  ?? articulo?.num_serie ?? '';
+    const imagen    = params.imagen    ?? articulo?.img       ?? '';
+
+    // Si el artículo tiene precio en el catálogo y no se pasó precio explícito, usarlo
+    const precioUnitario = params.total > 0
+      ? params.total
+      : (articulo?.precio ?? 0);
+
+    const cantidad    = params.cantidad ?? 1;
+    const precioTotal = cantidad * precioUnitario;
+
+    // Descripción: parámetro > catálogo > vacío
+    const descripcion = params.descripcion ?? articulo?.descripcion ?? '';
+
+    logger.info(
+      `[agregarOtroServicioGeonet] uuid="${uuid}" categoria="${categoria}" ` +
+      `precio=${precioUnitario} cantidad=${cantidad} total=${precioTotal}`
+    );
+
+    // ── 3. Rellenar el formulario ──────────────────────────────────────────
+    await page.evaluate((args) => {
+      const setVal = (sel: string, val: string | number) => {
+        const el = document.querySelector(sel) as HTMLInputElement | HTMLTextAreaElement | null;
+        if (el) el.value = String(val);
+      };
+
+      setVal('#id_nombre',          args.nombre);
+      setVal('#id_descripcion',     args.descripcion);
+      setVal('#id_cantidad',        args.cantidad);
+      setVal('#id_total',           args.precioUnitario);
+      setVal('#id_precio',          args.precioTotal);
+      setVal('#id_precio_original', args.precioTotal);
+
+      // Campos ocultos del almacén
+      setVal('#id_uuid',            args.uuid);
+      setVal('#id_mac',             args.mac);
+      setVal('#id_num_serie',       args.numSerie);
+      setVal('#id_imagen',          args.imagen);
+      setVal('#id_categoria',       args.categoria);
+
+      // Select tipo_pago
+      const sel = document.querySelector('#id_tipo_pago') as HTMLSelectElement | null;
+      if (sel) sel.value = String(args.tipoPago);
+
+      // Fechas
+      if (args.fechaInicio) setVal('#id_fecha_inicio', args.fechaInicio);
+      if (args.fechaFin)    setVal('#id_fecha_fin',    args.fechaFin);
+    }, {
+      nombre: params.nombre, descripcion, cantidad, precioUnitario, precioTotal,
+      uuid, mac, numSerie, imagen, categoria,
+      tipoPago:    params.tipoPago ?? 200,
+      fechaInicio: params.fechaInicio,
+      fechaFin:    params.fechaFin,
+    });
+
+    // ── 4. POST via fetch (el CSRF lo extrae del DOM en el mismo contexto) ─
+    const result = await page.evaluate(async (args) => {
+      try {
+        const formEl = document.querySelector('form#agregar-otro-servicio') as HTMLFormElement | null;
+        if (!formEl) return { status: 502, error: 'Formulario no encontrado', finalUrl: '', errors: [] };
+
+        const formData = new FormData(formEl);
+        // El CSRF ya está en el FormData porque viene del hidden input del DOM
+        // pero lo reforzamos por si acaso
+        const csrf = (document.querySelector('input[name="csrfmiddlewaretoken"]') as HTMLInputElement)?.value || '';
+        formData.set('csrfmiddlewaretoken', csrf);
+
+        const res = await fetch(args.formUrl, { method: 'POST', body: formData });
+
+        const effectiveStatus = (res.redirected && !res.url.includes('/agregar-otro-producto/'))
+          ? 200
+          : res.url.includes('/agregar-otro-producto/')
+            ? 422
+            : res.status;
+
+        let errors: string[] = [];
+        if (effectiveStatus === 422) {
+          const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+          errors = Array.from(doc.querySelectorAll('.alert-danger,.errorlist,.text-danger,.help-block'))
+            .map(el => el.textContent?.trim() ?? '')
+            .filter(Boolean);
+        }
+
+        return { status: effectiveStatus, finalUrl: res.url, errors };
+      } catch (e: any) {
+        return { status: 500, error: e.toString(), finalUrl: '', errors: [] };
+      }
+    }, { formUrl });
+
+    const isOk = result.status >= 200 && result.status < 400;
+    logger.info(
+      `[agregarOtroServicioGeonet] user="${params.externalIdOrUser}" ` +
+      `status=${result.status} t=${Date.now() - start}ms`
+    );
+
+    return {
+      status:     result.status,
+      location:   result.finalUrl,
+      formErrors: result.errors ?? [],
+      resolvedArticulo: { uuid, categoria, precioUnitario, precioTotal, cantidad },
+    };
+
+  } finally {
+    await page.close();
+  }
+}
+/**
+ * Consulta el endpoint de autocomplete de Geonet para encontrar un artículo
+ * del almacén por nombre. Reutiliza las cookies de sesión de Puppeteer.
+ *
+ * Devuelve el primer resultado que haga match, o null si no encuentra nada.
+ */
+private async buscarArticuloEnAlmacen(
+  searchTerm: string,
+  sessionCookies: Array<{ name: string; value: string }>
+): Promise<{
+  label: string;
+  uuid: string;
+  precio: number;
+  categoria: string;
+  mac: string;
+  num_serie: string;
+  img: string;
+  descripcion: string;
+} | null> {
+  // Convertir cookies de Puppeteer al formato Cookie header de HTTP
+  const cookieHeader = sessionCookies
+    .map(c => `${c.name}=${c.value}`)
+    .join('; ');
+
+  const url = `${GEONET_BASE_URL}/autocomplete-almacen/`;
+
+  logger.info(`[buscarArticuloEnAlmacen] Consultando: ${url} | término: "${searchTerm}"`);
+
+  const response = await this.withRetry(() =>
+    axios.get(url, {
+      headers: {
+        Cookie: cookieHeader,
+        'X-Requested-With': 'XMLHttpRequest',  // Geonet lo espera para JSON
+        Referer: GEONET_BASE_URL,
+      },
+      timeout: 10000,
+    })
+  );
+
+  const items: any[] = Array.isArray(response.data) ? response.data : [];
+
+  if (items.length === 0) {
+    logger.warn('[buscarArticuloEnAlmacen] Catálogo vacío o sesión inválida');
+    return null;
+  }
+
+  const normalizedSearch = this.normalizeText(searchTerm);
+
+  // Buscar coincidencia exacta primero, luego parcial
+  const match =
+    items.find(i => this.normalizeText(i.label ?? '') === normalizedSearch) ??
+    items.find(i => this.normalizeText(i.label ?? '').includes(normalizedSearch)) ??
+    items.find(i => normalizedSearch.includes(this.normalizeText(i.label ?? '')));
+
+  if (!match) {
+    logger.warn(`[buscarArticuloEnAlmacen] Sin coincidencia para "${searchTerm}"`);
+    return null;
+  }
+
+  logger.info(`[buscarArticuloEnAlmacen] Encontrado: "${match.label}" uuid=${match.uuid}`);
+
+  return {
+    label:       match.label       ?? '',
+    uuid:        match.uuid        ?? '',
+    precio:      parseFloat(match.precio ?? '0'),
+    categoria:   match.categoria   ?? '',
+    mac:         match.mac         ?? '',
+    num_serie:   match.num_serie   ?? '',
+    img:         match.img         ?? '',
+    descripcion: match.descripcion ?? '',
+  };
+}
   public async crearTicket(params: GeonetTicketInput): Promise<any> {
     const start = Date.now();
     const { browser, page } = await this.openPage();

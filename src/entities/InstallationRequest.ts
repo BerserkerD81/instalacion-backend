@@ -65,6 +65,15 @@ export class InstallationRequest {
   @Column({ type: 'varchar', length: 100, nullable: true })
   plan!: string | null;
 
+  @Column({ type: 'boolean', nullable: true, default: false })
+  tieneTV!: boolean | null;
+
+  @Column({ type: 'int', nullable: true })
+  decosExtras!: number | null;
+
+  @Column({ type: 'boolean', nullable: true, default: false })
+  pagaInstalacion!: boolean | null;
+
   // Campos adicionales para confirmación del técnico
   @Column({ type: 'boolean', nullable: true, default: false })
   confirmedByTechnician!: boolean | null;

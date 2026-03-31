@@ -41,6 +41,24 @@ export class InstallationController {
         }
       }
 
+      // Normalizar campos booleanos y numéricos que pueden llegar como strings
+      const parseBool = (v: any) => {
+        if (v === true || v === false) return v;
+        const s = String(v ?? '').toLowerCase().trim();
+        return s === 'true' || s === '1' || s === 'yes';
+      };
+
+      if (data.tieneTV !== undefined) {
+        data.tieneTV = parseBool(data.tieneTV);
+      }
+      if (data.pagaInstalacion !== undefined) {
+        data.pagaInstalacion = parseBool(data.pagaInstalacion);
+      }
+      if (data.decosExtras !== undefined && data.decosExtras !== null && data.decosExtras !== '') {
+        const n = Number(data.decosExtras);
+        data.decosExtras = Number.isFinite(n) ? n : null;
+      }
+
       // Procesar archivos si existen: guardar buffers en disco y pasar filename
       // Las imágenes NO son obligatorias, si no vienen, se usarán fake images en el service
       if (req.files) {
@@ -134,7 +152,51 @@ export class InstallationController {
       return res.status(statusCode).json({ message: error.message || 'Error en búsqueda de preinstalación' });
     }
   }
+public async agregarOtroServicioGeonet(req: Request, res: Response): Promise<Response> {
+  try {
+    const { externalIdOrUser } = req.params as any;
+    if (!externalIdOrUser) {
+      return res.status(400).json({ message: 'externalIdOrUser es requerido en la URL' });
+    }
 
+    const body: any = req.body ?? {};
+
+    // Campos requeridos
+    const nombre = body.nombre ?? body.name;
+    const total  = body.total ?? body.precio ?? body.price;
+
+    if (!nombre || total === undefined || total === null) {
+      return res.status(400).json({ message: 'nombre y total son obligatorios' });
+    }
+
+    const result = await this.installationService.agregarOtroServicioGeonet({
+      externalIdOrUser: String(externalIdOrUser),
+      nombre:       String(nombre),
+      descripcion:  body.descripcion !== undefined ? String(body.descripcion) : undefined,
+      cantidad:     body.cantidad    !== undefined ? Number(body.cantidad)    : 1,
+      total:        Number(total),
+      tipoPago:     body.tipoPago    ?? body.tipo_pago ?? 200,   // default: Un solo Pago
+      fechaInicio:  body.fechaInicio ?? body.fecha_inicio        ?? undefined,
+      fechaFin:     body.fechaFin    ?? body.fecha_fin           ?? undefined,
+      // Campos opcionales de almacén (se rellenan si buscas primero por autocomplete)
+      uuid:         body.uuid        ?? undefined,
+      mac:          body.mac         ?? undefined,
+      numSerie:     body.numSerie    ?? body.num_serie           ?? undefined,
+      imagen:       body.imagen      ?? undefined,
+      categoria:    body.categoria   ?? undefined,
+    });
+
+    const isOk = result.status >= 200 && result.status < 400;
+    return res.status(isOk ? 200 : 502).json(result);
+
+  } catch (error: any) {
+    logger.error(`Error en agregarOtroServicioGeonet: ${String(error)}`);
+    const statusCode = error.statusCode || 500;
+    return res
+      .status(statusCode)
+      .json({ message: error.message || 'Error agregando servicio en Geonet', data: error.data });
+  }
+}
   public async crearTicket(req: Request, res: Response): Promise<Response> {
     try {
       const body: any = req.body ?? {};
