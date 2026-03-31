@@ -1467,42 +1467,63 @@ public async agregarOtroServicioGeonet(params: AgregarOtroServicioInput): Promis
       fechaFin:    params.fechaFin,
     });
 
-    // ── 4. POST via fetch (el CSRF lo extrae del DOM en el mismo contexto)
-    // Ahora devolvemos también un `bodySnippet` para poder depurar responses 5xx/errores.
-    const result = await page.evaluate(async (args) => {
-      try {
+    // Defensa: algunos templates de Geonet generan variables JS (ej. form_data_1)
+    // que a veces no están definidas y provocan un ReferenceError en la página
+    // resultando en un 500. Creamos fallback vacíos para evitar ese error.
+    try {
+      await page.evaluate(() => {
+        try {
+          // Definimos un fallback genérico; si hay varios form_data_X, no conocemos
+          // sus índices exactos, pero definir uno común evita algunos errores.
+          // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+          // @ts-ignore
+          if (typeof window['form_data_1'] === 'undefined') window['form_data_1'] = {};
+        } catch (e) { }
+      });
+    } catch (e) { }
+
+    // ── 4. Submit usando el propio formulario (click/submit) para ejecutar
+    // los handlers del frontend que definen variables como `form_data_1`.
+    // Esperamos navegación o recogemos errores en la misma página.
+    const submitStart = Date.now();
+    let result: any = { status: 500, finalUrl: '', errors: [], bodySnippet: '' };
+
+    // Ejecutar el click/submit en el contexto de la página
+    try {
+      const submitAttempt = await page.evaluate((args) => {
         const formEl = document.querySelector('form#agregar-otro-servicio') as HTMLFormElement | null;
-        if (!formEl) return { status: 502, error: 'Formulario no encontrado', finalUrl: '', errors: [], bodySnippet: document.body.innerText?.substring(0, 800) || '' };
+        if (!formEl) return { ok: false, reason: 'no-form' };
 
-        const formData = new FormData(formEl);
-        // El CSRF ya está en el FormData porque viene del hidden input del DOM
-        // pero lo reforzamos por si acaso
-        const csrf = (document.querySelector('input[name="csrfmiddlewaretoken"]') as HTMLInputElement)?.value || '';
-        formData.set('csrfmiddlewaretoken', csrf);
-
-        const res = await fetch(args.formUrl, { method: 'POST', body: formData });
-        const resText = await res.text();
-
-        const doc = new DOMParser().parseFromString(resText, 'text/html');
-
-        const effectiveStatus = (res.redirected && !res.url.includes('/agregar-otro-producto/'))
-          ? 200
-          : res.url.includes('/agregar-otro-producto/')
-            ? 422
-            : res.status;
-
-        let errors: string[] = [];
-        if (effectiveStatus === 422) {
-          errors = Array.from(doc.querySelectorAll('.alert-danger,.errorlist,.text-danger,.help-block'))
-            .map(el => el.textContent?.trim() ?? '')
-            .filter(Boolean);
+        const btn = formEl.querySelector('button[type="submit"], input[type="submit"]') as HTMLElement | null;
+        if (btn) {
+          try { btn.click(); return { ok: true, method: 'click' }; } catch (e) { /* fallthrough */ }
         }
 
-        return { status: effectiveStatus, finalUrl: res.url, errors, bodySnippet: resText.substring(0, 2000) };
-      } catch (e: any) {
-        return { status: 500, error: e.toString(), finalUrl: '', errors: [], bodySnippet: document.body.innerText?.substring(0, 800) || '' };
-      }
-    }, { formUrl });
+        // Fallback: dispatch submit event
+        try {
+          formEl.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          return { ok: true, method: 'dispatch' };
+        } catch (e) {
+          try { (formEl as any).submit(); return { ok: true, method: 'submit' }; } catch (e2) { return { ok: false, reason: 'submit-failed' }; }
+        }
+      }, { formUrl });
+
+      // Esperar navegación (si ocurre) o esperar un tiempo razonable para que handlers AJAX respondan
+      const nav = await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 8000 }).catch(() => null);
+
+      // Extraer resultados: URL final, posibles errores visibles y snippet del body
+      const finalUrl = page.url();
+      const bodySnippet = await page.evaluate(() => (document.body ? document.body.innerText.substring(0, 2000) : ''));
+      const errors = await page.evaluate(() => Array.from(document.querySelectorAll('.alert-danger,.errorlist,.text-danger,.help-block')).map((el) => el.textContent?.trim() || '').filter(Boolean));
+
+      const effectiveStatus = finalUrl.includes('/agregar-otro-producto/') ? 422 : 200;
+
+      result = { status: effectiveStatus, finalUrl, errors, bodySnippet };
+    } catch (e: any) {
+      // En caso de fallo en Puppeteer, devolvemos el body parcial para depuración
+      const bodySnippet = await page.evaluate(() => (document.body ? document.body.innerText.substring(0, 800) : '')) .catch(() => '');
+      result = { status: 500, error: String(e), finalUrl: page.url?.() ?? '', errors: [], bodySnippet };
+    }
 
     const isOk = result.status >= 200 && result.status < 400;
     logger.info(
