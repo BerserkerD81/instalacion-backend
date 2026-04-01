@@ -1467,6 +1467,29 @@ public async agregarOtroServicioGeonet(params: AgregarOtroServicioInput): Promis
       fechaFin:    params.fechaFin,
     });
 
+    // Forzar recálculo en la página (update_cantidad / update_total) para que
+    // los campos `#id_precio` y `#id_precio_original` queden consistentes
+    // cuando `cantidad > 1`. Algunos handlers se enlazan a eventos de teclado
+    // o change, así que llamamos a las funciones públicas si existen y
+    // disparamos eventos de `keyup`/`change` como fallback.
+    try {
+      await page.evaluate(() => {
+        try {
+          if (typeof (window as any).update_cantidad === 'function') {
+            (window as any).update_cantidad();
+          } else {
+            // trigger keyup/change so handlers recompute values
+            try { (window as any).jQuery && (window as any).jQuery('#id_cantidad, #id_total').trigger('keyup'); } catch (e) {}
+          }
+          if (typeof (window as any).update_total === 'function') {
+            (window as any).update_total();
+          } else {
+            try { (window as any).jQuery && (window as any).jQuery('#id_tipo_pago').trigger('change'); } catch (e) {}
+          }
+        } catch (e) { }
+      });
+    } catch (e) { }
+
     // Defensa: algunos templates de Geonet generan variables JS (ej. form_data_1)
     // que a veces no están definidas y provocan un ReferenceError en la página
     // resultando en un 500. Creamos fallback vacíos para evitar ese error.
